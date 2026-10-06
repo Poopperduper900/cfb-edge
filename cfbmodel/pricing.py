@@ -107,6 +107,12 @@ def side_equity(side: str, exp_margin: float, exp_total: float, spread_home: flo
     return cp[side] + 0.5 * cp["push"]
 
 
+def total_side_equity(side: str, exp_total: float, exp_margin: float, line: float, source: str = "model") -> float:
+    """Win probability of an over/under with a push counted as half a win."""
+    tp = game_model.total_probs(exp_total, line, exp_margin, source=source)
+    return tp[side] + 0.5 * tp["push"]
+
+
 def key_number_value(exp_margin: float, exp_total: float, spread_home: float, side: str,
                      source: str = "model") -> dict:
     """Equity (win + half a push) gained (+) or lost (-) when the bettor's line moves 0.5 or 1.0

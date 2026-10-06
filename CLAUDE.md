@@ -65,8 +65,8 @@ python -m cfbmodel models                           # list parameter versions (*
 python -m cfbmodel rollback <version>
 python -m cfbmodel postmortem --season 2026 --week N
 python -m cfbmodel board --season 2026 --week N
-python -m cfbmodel log-bet ...
-python -m cfbmodel clv
+python -m cfbmodel log-bet --season 2026 --week N --game "Away @ Home" --market spread --side home --line -6.5 --price -110 --book MyBook --stake 1
+python -m cfbmodel clv                              # closing line value, results, ROI of your logged bets
 streamlit run app/dashboard.py        # Phase 10
 ```
 

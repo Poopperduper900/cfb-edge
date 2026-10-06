@@ -128,11 +128,6 @@ def _best_ml(book_lines: pd.DataFrame, side: str):
     return f"{r[col]:+g} ({r['book']})"
 
 
-def _total_equity(model_total, margin, line, side, source="model") -> float:
-    tp = game_model.total_probs(model_total, line, margin, source=source)
-    return tp[side] + 0.5 * tp["push"]
-
-
 # ---------------------------------------------------------------------- the builder
 
 
@@ -290,8 +285,9 @@ def build_board(season: int, week: int, games: pd.DataFrame, lines: pd.DataFrame
             clears_m = (abs(model_total - t_line) * sh >= P.betting.min_edge_total) and sz_m["ev"] > 0
             clears_a = (abs(act_total - t_line) * sh >= P.betting.min_edge_total) and sz_a["ev"] > 0
             m_for_equity = model_margin if not np.isnan(model_margin) else 0.0
-            buy = _total_equity(model_total, m_for_equity, t_line + (-0.5 if side == "over" else 0.5), side) \
-                - _total_equity(model_total, m_for_equity, t_line, side)
+            moved = t_line + (-0.5 if side == "over" else 0.5)          # half a point in the bettor's favour
+            buy = (pricing.total_side_equity(side, model_total, m_for_equity, moved)
+                   - pricing.total_side_equity(side, model_total, m_for_equity, t_line))
             use = sz_a if (clears_a and validated and w > 0 and not drift_off and fbs_both) else sz_m
             finish({**base, "market": f"total {side}", "book": ", ".join(sorted(book_lines["book"].dropna().unique()[:3])),
                     "line": t_line, "price": int(price), "best_line_across_books": _best_total(book_lines, side),

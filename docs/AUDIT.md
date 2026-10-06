@@ -50,9 +50,9 @@ a max rating change of 0.0000. One related item is left open: `derive_depth_char
 (its 4-week look-back only bites within a season), so early in a season the "depth chart" is last season's.
 That is a modelling choice, not a leak; revisit in Phase 3.
 
-**B. HIGH (once bets are logged): CLV sign is inverted.** `edge.clv` (`edge.py:222`) returns the opposite
+**B. HIGH, FIXED in Phase 8: CLV sign is inverted.** `edge.clv` (`edge.py:222`) returns the opposite
 sign for spreads and totals, so "% beating the close" would be backwards. Measured on four cases, all
-wrong. Fix with the sign-convention tests in Phase 8.
+wrong. *Fix:* `edge.clv` rewritten with the conventions documented in its docstring; `tests/test_tracking.py` pins 15 explicit cases (spread home/away, total over/under, props, both directions) plus a check that points-CLV and probability-CLV agree in sign.
 
 **C. MEDIUM, FIXED (Phases 1 and 4): errors are swallowed, which breaks rule 1 ("if an API call fails, stop and report").**
 `cli.cmd_pull` (`except Exception: pass` around plays/box scores), `cli._load`, five `try/except` blocks in

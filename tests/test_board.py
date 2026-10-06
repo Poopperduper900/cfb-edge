@@ -244,6 +244,9 @@ def test_the_board_command_runs_end_to_end_on_a_synthetic_league(tmp_path, monke
     assert len(csv) >= 12 and "BET" not in set(csv["status"])           # no validation file => no bets
     assert (tmp_path / "board_2026_w7.html").read_text(encoding="utf-8").startswith("<!doctype html>")
     assert "No validation_status.json" in out and "wrote" in out and "BOARD season 2026 week 7" in out
+    log = pd.read_csv(tmp_path / "lines_log.csv")                       # every board run snapshots its lines
+    assert len(log) > 0 and {"logged_at", "book", "spread_close", "total_close"} <= set(log.columns)
+    assert set(log["week"]) == {7} and "logged" in out
 
 
 # ------------------------------------------------- rollback reproduces the board exactly

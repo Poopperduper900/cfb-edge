@@ -30,7 +30,7 @@ import pandas as pd
 
 from . import board as board_mod
 from . import (backtest, budget, edge, game_model, ingest, learn, params, priors, props, qb,
-               playerstate, ratings, schema, script, state, status, teams, validation, week0, weather)
+               playerstate, ratings, schema, script, state, status, teams, tracking, validation, week0, weather)
 from .config import C, OUTPUT
 from .params import P
 from .keys import MissingKeyError
@@ -254,7 +254,36 @@ def cmd_board(args):
     csv_path.write_text(board_mod.to_csv(b))
     html_path.write_text(board_mod.to_html(b), encoding="utf-8")
     print(board_mod.summary(b))
-    print(f"\nwrote {csv_path}\nwrote {html_path}   (open it in a browser, or send it to your phone)")
+    n_logged = tracking.log_lines(wk_lines, s, w)
+    print(f"\nwrote {csv_path}\nwrote {html_path}   (open it in a browser, or send it to your phone)"
+          f"\nlogged {n_logged} book lines to {tracking.lines_log_path()}")
+
+
+def cmd_log_bet(args):
+    """Record a bet you actually placed, so CLV and ROI can be tracked after the game."""
+    games = ingest.games(args.season)
+    game_id, label = tracking.resolve_game(args.game, games, args.week)
+    rec = tracking.add_bet(season=args.season, week=args.week, game_id=game_id, game=label, market=args.market,
+                           side=args.side, line=args.line, price=args.price, book=args.book, stake=args.stake,
+                           notes=args.notes or "")
+    print(f"logged bet #{rec['bet_id']}: {label}  {args.market} {args.side} {args.line:+g} at {args.price:+g} "
+          f"({args.book}), stake {args.stake:g}\nsaved to {tracking.bets_path()}")
+
+
+def cmd_clv(args):
+    """After the games: closing line value, results and ROI for every logged bet."""
+    bets = tracking.load_bets()
+    if bets.empty:
+        print(f"no bets logged yet ({tracking.bets_path()}). Add one with `python -m cfbmodel log-bet`.")
+        return
+    games = pd.concat([ingest.games(s) for s in sorted(bets["season"].unique())], ignore_index=True)
+    lines = pd.concat([ingest.lines(s) for s in sorted(bets["season"].unique())], ignore_index=True)
+    settled = tracking.settle(bets, games, lines)
+    text = tracking.report(settled, games)
+    settled.to_csv(OUTPUT / "bets_settled.csv", index=False)
+    (OUTPUT / "clv_report.md").write_text(text)
+    print(text)
+    print(f"wrote {OUTPUT / 'bets_settled.csv'}\nwrote {OUTPUT / 'clv_report.md'}")
 
 
 def cmd_models(args):
@@ -573,6 +602,23 @@ def main(argv=None):
     p.add_argument("--no-weather", action="store_true")
     p.set_defaults(func=cmd_board)
 
+    p = sub.add_parser("log-bet", parents=[net], help="record a bet you placed")
+    p.add_argument("--season", type=int, required=True)
+    p.add_argument("--week", type=int, required=True)
+    p.add_argument("--game", required=True, help="the label on the board, e.g. \"Auburn @ Georgia\", or the game id")
+    p.add_argument("--market", required=True, choices=["spread", "total", "moneyline"])
+    p.add_argument("--side", required=True, choices=["home", "away", "over", "under"])
+    p.add_argument("--line", type=float, required=True,
+                   help="the number you SAW for your side (Auburn +6.5 -> 6.5, side away); the price for a moneyline")
+    p.add_argument("--price", type=float, required=True, help="American odds, e.g. -110")
+    p.add_argument("--book", required=True)
+    p.add_argument("--stake", type=float, required=True, help="amount staked (units or dollars; be consistent)")
+    p.add_argument("--notes", default="")
+    p.set_defaults(func=cmd_log_bet)
+
+    p = sub.add_parser("clv", parents=[net], help="closing line value, results and ROI of your logged bets")
+    p.set_defaults(func=cmd_clv)
+
     p = sub.add_parser("models", help="list parameter versions")
     p.set_defaults(func=cmd_models)
 
@@ -637,7 +683,7 @@ def main(argv=None):
     try:
         return args.func(args) or 0
     except (ingest.CfbdError, budget.BudgetExceeded, schema.SchemaError, learn.LearnError,
-            params.ParamsError) as e:
+            params.ParamsError, tracking.TrackingError) as e:
         print(f"\n{type(e).__name__}: {e}", file=sys.stderr)
         return 2
     except MissingKeyError as e:

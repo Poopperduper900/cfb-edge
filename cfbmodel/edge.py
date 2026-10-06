@@ -222,13 +222,25 @@ CLV_COLS = [
 
 def clv(bet_line: float, close_line: float, market: str, side: str) -> float:
     """
-    Points of closing line value. Positive = you got a better number than close.
+    Points of closing line value. POSITIVE means you got a better number than the close.
+
+    Conventions (the one place they are defined; tests/test_tracking.py checks every case):
+      spread  lines are in HOME convention (home -6.5 is -6.5, so the road team at +6.5 is also -6.5).
+              A home bettor wants the number as high as possible (-6 beats -7): CLV = bet - close.
+              An away bettor wants it as low as possible: CLV = close - bet.
+      total / props  an OVER wants a low number (CLV = close - bet); an UNDER wants a high one
+              (CLV = bet - close).
+    The earlier version had every spread and total case backwards (AUDIT.md bug B).
     """
     if market == "spread":
-        return (close_line - bet_line) if side == "home" else (bet_line - close_line)
-    if market == "total":
-        return (close_line - bet_line) if side == "under" else (bet_line - close_line)
-    return (close_line - bet_line) if side == "over" else (bet_line - close_line)
+        if side not in ("home", "away"):
+            raise ValueError(f"spread side must be home or away, not {side!r}")
+        return (bet_line - close_line) if side == "home" else (close_line - bet_line)
+    if market in ("total", "prop"):
+        if side not in ("over", "under"):
+            raise ValueError(f"{market} side must be over or under, not {side!r}")
+        return (close_line - bet_line) if side == "over" else (bet_line - close_line)
+    raise ValueError(f"no points-CLV for market {market!r}")
 
 
 def clv_report(log: pd.DataFrame) -> pd.DataFrame:
