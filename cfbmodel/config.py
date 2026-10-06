@@ -66,6 +66,10 @@ class Constants:
     margin_df: float = 6.5  # Student-t dof; fatter tails than normal
 
     total_sd_base: float = 12.6
+    # A totals projection from our own ratings is less accurate than the market's total, so its
+    # distribution must be wider (same logic as pitfall 2 for margins). UNFITTED placeholder; the
+    # learning loop (Phase 6) replaces it with a value fitted on past totals.
+    total_sd_model_mult: float = 1.2
 
     # Key numbers, CFB-specific. Weight = multiplicative bump applied to the
     # discretized margin pmf. Fitted in calibrate.py from 2015-2025 margins.
@@ -110,6 +114,8 @@ class Constants:
     min_edge_total: float = 2.8
     min_ev_props: float = 0.045       # props carry 6-9% hold; demand more
     kelly_fraction: float = 0.25
+    edge_flat_haircut: float = 0.75   # believe only 3/4 of any disagreement with the market
+    sample_conf_k: float = 4.0        # weeks of data at which sample confidence is 50%
     max_bet_pct: float = 0.02
 
 

@@ -101,8 +101,9 @@ def kelly(p_win: float, odds: float, p_push: float = 0.0, fraction: float | None
     if b <= 0:
         return 0.0
     f = (b * p_win - p_lose) / b
-    f = max(f, 0.0) * frac
-    return float(min(f, C.max_bet_pct))
+    if f < 1e-12:            # no edge (or float dust around break-even) means no bet, exactly 0
+        return 0.0
+    return float(min(f * frac, C.max_bet_pct))
 
 
 def edge_shrinkage(raw_edge: float, market_softness: float = 1.0, sample_conf: float = 1.0) -> float:

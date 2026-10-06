@@ -182,12 +182,12 @@ def cover_prob(exp_margin: float, exp_total: float, spread_home: float,
     return {"home": p_home, "away": p_away, "push": push}
 
 
-def moneyline_prob(exp_margin: float, exp_total: float) -> dict:
-    xs, pmf = margin_pmf(exp_margin, exp_total)
+def moneyline_prob(exp_margin: float, exp_total: float, source: str = "model") -> dict:
+    xs, pmf = margin_pmf(exp_margin, exp_total, source=source)
     return {"home": float(pmf[xs > 0].sum()), "away": float(pmf[xs < 0].sum())}
 
 
-def total_probs(exp_total: float, line: float, exp_margin: float = 0.0) -> dict:
+def total_probs(exp_total: float, line: float, exp_margin: float = 0.0, source: str = "model") -> dict:
     """
     P(over), P(under), P(push) on the game total.
 
@@ -196,6 +196,10 @@ def total_probs(exp_total: float, line: float, exp_margin: float = 0.0) -> dict:
     throwing it 40 times.
     """
     sd = C.total_sd_base + 0.06 * abs(exp_margin)
+    if source == "model":
+        sd *= C.total_sd_model_mult       # our own total is less accurate than the market's
+    elif source != "market":
+        raise ValueError(f"source must be 'market' or 'model', not {source!r}")
     pts = np.arange(0, 140)
     z_hi = (pts + 0.5 - exp_total) / sd
     z_lo = (pts - 0.5 - exp_total) / sd
