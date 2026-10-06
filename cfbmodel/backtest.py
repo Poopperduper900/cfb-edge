@@ -23,7 +23,6 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from . import ratings as R
 from .config import C
 from .edge import american_to_decimal, expected_value
 
@@ -111,77 +110,6 @@ def opener_vs_closer(df: pd.DataFrame) -> pd.DataFrame:
             "mae_close": [(d["margin"] - d["close_margin"]).abs().mean().round(3)],
         }
     )
-
-
-# --------------------------------------------------------------- walk-forward
-
-
-def walk_forward(
-    pbp_by_season: dict[int, pd.DataFrame],
-    lines_df: pd.DataFrame,
-    games_df: pd.DataFrame,
-    seasons: list[int],
-    start_week: int = 4,
-    w_model: float = 0.35,
-) -> pd.DataFrame:
-    """
-    For each (season, week), refit ratings on strictly prior data and project
-    that week's games. No lookahead anywhere: ratings, market ratings and
-    player priors are all cut at the as-of point.
-
-    start_week=4 because before that the EPA ratings are mostly prior, and a
-    3-game sample against unknown opponents is not a rating — it is a rumour.
-    """
-    out = []
-    all_pbp = pd.concat(pbp_by_season.values(), ignore_index=True)
-
-    for season in seasons:
-        for week in range(start_week, 16):
-            try:
-                epa = R.fit_epa_ratings(all_pbp, season, week)
-                mkt = R.fit_market_ratings(lines_df, season, week)
-                rt = R.blend(epa, mkt, w_model=w_model)
-                tot = R.fit_total_ratings(lines_df, season, week)
-            except (ValueError, KeyError):
-                continue
-
-            wk = games_df[(games_df["season"] == season) & (games_df["week"] == week)]
-            for _, g in wk.iterrows():
-                h, a = g.get("homeTeam"), g.get("awayTeam")
-                if h not in rt.index or a not in rt.index:
-                    continue
-                hfa = 0.0 if g.get("neutralSite") else C.hfa_points
-                model_margin = rt.loc[h, "rating"] - rt.loc[a, "rating"] + hfa
-                model_total = (
-                    tot.loc[h, "total_rating"] + tot.loc[a, "total_rating"]
-                    if h in tot.index and a in tot.index
-                    else np.nan
-                )
-                ln = lines_df[lines_df["gameId"] == g.get("id")]
-                out.append(
-                    {
-                        "season": season,
-                        "week": week,
-                        "gameId": g.get("id"),
-                        "home": h,
-                        "away": a,
-                        "home_conf": g.get("homeConference"),
-                        "away_conf": g.get("awayConference"),
-                        "margin": g.get("margin"),
-                        "actual_total": g.get("total"),
-                        "model_margin": model_margin,
-                        "model_total": model_total,
-                        "spread_close": ln["spread_close"].median() if len(ln) else np.nan,
-                        "spread_open": ln["spread_open"].median() if len(ln) else np.nan,
-                        "total_close": ln["total_close"].median() if len(ln) else np.nan,
-                        "total_open": ln["total_open"].median() if len(ln) else np.nan,
-                        "disagreement": rt.loc[h, "disagreement"] - rt.loc[a, "disagreement"],
-                    }
-                )
-    res = pd.DataFrame(out)
-    if not res.empty:
-        res["market_margin"] = -res["spread_close"]
-    return res
 
 
 # ---------------------------------------------------------------- calibration

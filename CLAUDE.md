@@ -56,8 +56,9 @@ project's own validation harness rejects it.
 python -m pytest -q
 python -m cfbmodel --help                   # lists every command (week0, slate, props, weather, qb ...)
 python -m cfbmodel pull --seasons 2021 2022 2023 2024 2025 2026
-python -m cfbmodel validate --seasons 2022 2023 2024 2025
-python -m cfbmodel update --season 2026 --week N   # weekly team + player ratings
+python -m cfbmodel fit-priors --seasons 2019 2020 2021 2022 2023 2024 2025   # preseason weights + CV score
+python -m cfbmodel validate --seasons 2022 2023 2024 2025 2026   # the gate; writes output/validation_status.json
+python -m cfbmodel update --season 2026 --week N   # after week N finishes: team + player ratings
 python -m cfbmodel learn                            # champion/challenger recalibration
 python -m cfbmodel models | rollback <version>
 python -m cfbmodel board --season 2026 --week N

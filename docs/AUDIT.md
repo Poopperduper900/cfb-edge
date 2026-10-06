@@ -54,10 +54,10 @@ That is a modelling choice, not a leak; revisit in Phase 3.
 sign for spreads and totals, so "% beating the close" would be backwards. Measured on four cases, all
 wrong. Fix with the sign-convention tests in Phase 8.
 
-**C. MEDIUM, FIXED in Phase 1 (one item left for Phase 4): errors are swallowed, which breaks rule 1 ("if an API call fails, stop and report").**
+**C. MEDIUM, FIXED (Phases 1 and 4): errors are swallowed, which breaks rule 1 ("if an API call fails, stop and report").**
 `cli.cmd_pull` (`except Exception: pass` around plays/box scores), `cli._load`, five `try/except` blocks in
 `week0.build_ratings`, `weather.attach_weather` (`except Exception: wx = {}`), `ingest.season_plays`. A bad key,
-a rate limit or a typo in the season looks like "no data" instead of an error. *Fix:* those sites now let errors through; only an explicit HTTP 404 on an optional dataset is reported (visibly) as "not available". The CLI turns CFBD/budget/schema errors into a plain message and exit code 2. *Left:* `backtest.walk_forward` still has `except (ValueError, KeyError): continue`, replaced when the validation harness is rebuilt (Phase 4).
+a rate limit or a typo in the season looks like "no data" instead of an error. *Fix:* those sites now let errors through; only an explicit HTTP 404 on an optional dataset is reported (visibly) as "not available". The CLI turns CFBD/budget/schema errors into a plain message and exit code 2. The last one, `backtest.walk_forward`'s `except (ValueError, KeyError): continue`, was removed in Phase 4 (the function is gone; `validation.walk_forward` only skips the dedicated `NoDataBeforeAsOf` error and lists every skip).
 
 **D. MEDIUM, FIXED in Phase 1: weather cache never hits.** `weather._cache` (`weather.py:57`) names files with Python's `hash()`,
 which is randomised per process (measured: two runs, two different values). Every run re-calls Open-Meteo.
@@ -78,8 +78,8 @@ but one call would create it. All of these move to the params file in Phase 6a.
 at import). Checks [10], [11], [13] only printed (I added minimal assertions, labelled in the file). Check
 [12] passes with p = 0.0096 against a 0.01 limit: deterministic with the fixed seed, but fragile.
 
-**I. INFO: Phase 4 gaps already visible.** `backtest.market_efficiency_test` uses classical standard errors
-(the plan requires heteroskedasticity-robust), tests closing lines only, and has no train/holdout split.
+**I. INFO, FIXED in Phase 4: gaps in the old validation.** `backtest.market_efficiency_test` uses classical standard errors
+(the plan requires heteroskedasticity-robust), tests closing lines only, and has no train/holdout split. *Fix:* `validation.py` uses HC3 standard errors, tests open and close separately, and requires the pre-registered train + holdout rule.
 
 ## Where this leaves the plan
 

@@ -79,7 +79,7 @@ def build_team_state(season: int, week_completed: int, lines: pd.DataFrame, pbp:
 
 
 def preseason_prior_points(season: int, lines: pd.DataFrame, recruiting: dict, returning: pd.DataFrame,
-                           portal: pd.DataFrame) -> pd.Series:
+                           portal: pd.DataFrame, weights: dict | None = None) -> pd.Series:
     """Preseason rating in points for every team, from last season's market rating, 4-year
     recruiting, returning production and portal, weighted by output/prior_weights.json
     (unfitted defaults, and a note in the result's attrs, if that file is missing)."""
@@ -89,6 +89,7 @@ def preseason_prior_points(season: int, lines: pd.DataFrame, recruiting: dict, r
         recruiting=priors.rolling_recruiting(recruiting, season),
         returning=priors.returning_production_score(returning),
         portal=priors.portal_score(portal, season),
+        weights=weights,
     )
     s = out["rating"].rename("prior_rating")
     s.attrs["weights_source"] = out.attrs.get("weights_source")

@@ -31,6 +31,11 @@ from . import status
 from .config import C
 
 
+class NoDataBeforeAsOf(ValueError):
+    """There is no data strictly before the as-of point (e.g. the first season in the cache).
+    The only error the walk-forward is allowed to skip over; anything else is a bug."""
+
+
 # ------------------------------------------------------------ as-of filtering
 
 
@@ -138,7 +143,7 @@ def fit_epa_ratings(
     df = clean_plays(pbp)
     df = as_of(df, asof_season, asof_week)
     if df.empty:
-        raise ValueError("no plays available before the as-of point")
+        raise NoDataBeforeAsOf("no plays available before the as-of point")
 
     teams = sorted(set(df["offense"]) | set(df["defense"]))
     idx = {t: i for i, t in enumerate(teams)}
@@ -245,7 +250,7 @@ def fit_market_ratings(
         "spread_close"
     ].median()
     if df.empty:
-        raise ValueError("no closing lines before as-of point")
+        raise NoDataBeforeAsOf("no closing lines before as-of point")
 
     teams = sorted(set(df["home"]) | set(df["away"]))
     idx = {t: i for i, t in enumerate(teams)}
@@ -279,7 +284,7 @@ def fit_total_ratings(lines_df: pd.DataFrame, asof_season: int, asof_week: int) 
         "total_close"
     ].median()
     if df.empty:
-        raise ValueError("no closing totals before as-of point")
+        raise NoDataBeforeAsOf("no closing totals before as-of point")
 
     teams = sorted(set(df["home"]) | set(df["away"]))
     idx = {t: i for i, t in enumerate(teams)}

@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from . import (backtest, budget, edge, game_model, ingest, priors, props, qb,
-               playerstate, ratings, schema, script, state, teams, week0, weather)
+               playerstate, ratings, schema, script, state, teams, validation, week0, weather)
 from .config import C, OUTPUT
 from .keys import MissingKeyError
 
@@ -109,46 +109,55 @@ def _load(seasons):
     return g, ln, pbp
 
 
+def _prior_weights_by_season(seasons, ln, rec, rp, pt):
+    """Preseason blend weights for each season, fit ONLY on earlier seasons (so judging the
+    early weeks of season S never uses S's own results). Falls back to the labelled unfitted
+    defaults when fewer than two earlier seasons exist."""
+    out = {}
+    loaded = sorted(ln["season"].unique())
+    for s in seasons:
+        earlier = [y for y in loaded if y < s]
+        weights, source = dict(priors.DEFAULT_WEIGHTS), "default_unfitted"
+        if len(earlier) >= 3:
+            hist = priors.build_prior_history(ln[ln["season"] < s], rec, rp, pt, earlier)
+            if hist["season"].nunique() >= 2:
+                weights, source = priors.fit_prior_weights(hist), f"fitted on seasons < {s}"
+        out[s] = (weights, source)
+    return out
+
+
 def cmd_validate(args):
-    g, ln, pbp = _load(args.seasons)
-    print(f"loaded {len(g)} games, {sum(len(v) for v in pbp.values()):,} plays")
+    """The gate: does the model add information beyond the betting line? See validation.py."""
+    seasons = sorted(args.seasons)
+    load = [seasons[0] - 1] + seasons
+    ingest.set_current(season=max(seasons))
+    g, ln, pbp = _load(load)
+    allp = pd.concat(pbp.values(), ignore_index=True)
+    print(f"loaded {len(g)} games, {len(allp):,} plays for {load[0]}-{load[-1]}")
 
-    res = backtest.walk_forward(pbp, ln, g, args.seasons, start_week=args.start_week,
-                                w_model=1.0)
-    res = res.dropna(subset=["margin", "market_margin", "model_margin"])
+    rec = {y: ingest.recruiting_teams(y) for y in range(load[0] - 3, load[-1] + 1)}
+    rp = {y: ingest.returning_production(y) for y in load}
+    pt = {y: _portal_or_empty(y) for y in load}
+    weights = _prior_weights_by_season(seasons, ln, rec, rp, pt)
+    prior = {s: state.preseason_prior_points(s, ln, rec, rp[s], pt[s], weights=weights[s][0]) for s in seasons}
+
+    res = validation.walk_forward(g, ln, allp, seasons, prior_by_season=prior)
     res.to_csv(OUTPUT / "walkforward.csv", index=False)
-    print(f"\nwalk-forward rows: {len(res)}")
+    status = validation.run_validation(res)
+    report = validation.build_report(status, res)
+    report += "\nPreseason weights used per season: " + "; ".join(f"{s}: {w[1]}" for s, w in weights.items()) + "\n"
+    sp, rp_path = validation.write_outputs(status, report)
 
-    print("\n=== MARKET EFFICIENCY TEST (the one that decides everything) ===")
-    print(backtest.market_efficiency_test(res).to_string())
-    print("""
-Read it like this:
-  model_margin p > 0.10  -> your ratings add nothing over the closing line.
-                            Do not bet sides or totals. Go to props.
-  model_margin p < 0.05  -> there is signal. The coef is your w_model:
-                            a coef of 0.15 means blend 15% model / 85% market.
-                            It is NOT permission to bet your raw number.
-""")
-
-    print("=== SEGMENTED (where CFB edge actually lives, if anywhere) ===")
-    res["day_of_week"] = pd.to_datetime(res.get("start_date"), errors="coerce").dt.day_name() \
-        if "start_date" in res else "Saturday"
-    res["tier"] = np.where(
-        res["home_conf"].isin(["SEC", "Big Ten", "Big 12", "ACC"])
-        & res["away_conf"].isin(["SEC", "Big Ten", "Big 12", "ACC"]),
-        "P4 vs P4",
-        np.where(
-            ~res["home_conf"].isin(["SEC", "Big Ten", "Big 12", "ACC"])
-            & ~res["away_conf"].isin(["SEC", "Big Ten", "Big 12", "ACC"]),
-            "G5 vs G5", "mixed"),
-    )
-    for by in ("tier", "week"):
-        print(f"\n-- by {by} --")
-        print(backtest.segmented_efficiency(res, by).to_string(index=False))
-
-    print("\n=== OPENER vs CLOSER ===")
-    print(backtest.opener_vs_closer(res).to_string(index=False))
-    print("\nwrote output/walkforward.csv")
+    passed = [k for k, v in status["markets"].items() if v["passed"]]
+    passed_segs = [x for x in status["segments"] if x["passed"]]
+    print(f"\nwalk-forward rows: {len(res)}   skipped weeks: {len(res.attrs.get('skipped', []))}")
+    if status["status"] == "SUSPECTED_LEAK":
+        print("!! SUSPECTED_LEAK: a model coefficient is above 0.5. Do not trust anything until this is explained.")
+    if not passed and not passed_segs:
+        print("RESULT: nothing passed. The market is not beaten (yet). The board will show no BET rows.")
+    else:
+        print(f"RESULT: markets passed: {passed or 'none'}; segments passed: {len(passed_segs)}")
+    print(f"wrote {sp}\nwrote {rp_path}")
 
 
 def _portal_or_empty(season):
@@ -425,7 +434,6 @@ def main(argv=None):
 
     p = sub.add_parser("validate", parents=[net])
     p.add_argument("--seasons", type=int, nargs="+", required=True)
-    p.add_argument("--start-week", type=int, default=4)
     p.set_defaults(func=cmd_validate)
 
     p = sub.add_parser("preseason", parents=[net]); p.add_argument("--season", type=int, required=True)
