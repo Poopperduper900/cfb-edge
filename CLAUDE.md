@@ -59,8 +59,11 @@ python -m cfbmodel pull --seasons 2021 2022 2023 2024 2025 2026
 python -m cfbmodel fit-priors --seasons 2019 2020 2021 2022 2023 2024 2025   # preseason weights + CV score
 python -m cfbmodel validate --seasons 2022 2023 2024 2025 2026   # the gate; writes output/validation_status.json
 python -m cfbmodel update --season 2026 --week N   # after week N finishes: team + player ratings
-python -m cfbmodel learn                            # champion/challenger recalibration
-python -m cfbmodel models | rollback <version>
+python -m cfbmodel learn --season 2026 --week N --seasons 2021 2022 2023 2024 2025 2026   # every 2nd week; usually 'no change'
+python -m cfbmodel learn ... --full                 # once after the season: also judges the early-season decay
+python -m cfbmodel models                           # list parameter versions (* = current)
+python -m cfbmodel rollback <version>
+python -m cfbmodel postmortem --season 2026 --week N
 python -m cfbmodel board --season 2026 --week N
 python -m cfbmodel log-bet ...
 python -m cfbmodel clv

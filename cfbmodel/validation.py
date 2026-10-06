@@ -105,7 +105,15 @@ def walk_forward(games: pd.DataFrame, lines: pd.DataFrame, pbp: pd.DataFrame, se
                 neutral = bool(getattr(r, "neutralSite", False))
                 m = mk.loc[r.id] if r.id in mk.index else pd.Series(np.nan, index=mk.columns)
                 have_tot = h in tot.index and a in tot.index
+                core = lambda col: float(ts.loc[h, col] - ts.loc[a, col])
+                prior_known = pd.notna(ts.loc[h, "prior_rating"]) and pd.notna(ts.loc[a, "prior_rating"])
                 rows.append({
+                    # components of model_margin, kept so the learner can refit HFA / the early-season
+                    # decay and the post-mortem can say which piece drove a miss
+                    "core_model": core("model_rating_shrunk"), "core_unshrunk": core("model_rating_pts"),
+                    "core_prior": core("prior_rating") if prior_known else np.nan,
+                    "core_market": core("market_rating"), "prior_weight": float(ts.loc[h, "prior_weight"]),
+                    "hfa_used": 0.0 if neutral else hfa, "market_hfa": float(ts.loc[h, "market_hfa"]),
                     "season": season, "week": week, "gameId": r.id, "home": h, "away": a,
                     "home_conf": getattr(r, "homeConference", None),
                     "away_conf": getattr(r, "awayConference", None),

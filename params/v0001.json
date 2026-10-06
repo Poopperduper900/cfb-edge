@@ -3,7 +3,7 @@
     "version": "v0001",
     "parent": null,
     "created": "2026-10-06",
-    "note": "Starting values moved out of the code unchanged. Most were hand-set in the earlier build, not fitted; the learning loop (`python -m cfbmodel learn`) replaces them version by version, only when the replacement is proven better out-of-sample."
+    "note": "Starting values (mostly hand-set, not fitted), moved out of the code unchanged."
   },
   "margin": {
     "hfa_points": 2.35,
@@ -257,5 +257,22 @@
     "production_z_lo": -2.0,
     "production_z_hi": 2.5,
     "scale_points": 11.0
+  },
+  "learn": {
+    "window_weeks": 8,
+    "min_window_games": 300,
+    "min_window_player_games": 2000,
+    "max_step": 0.25,
+    "min_improvement": 0.0005,
+    "cal_tolerance": 0.002,
+    "bootstrap_n": 2000,
+    "every_n_weeks": 2
+  },
+  "drift": {
+    "recent_weeks": 4,
+    "baseline_weeks": 12,
+    "mae_ratio_increase": 0.2,
+    "cal_error_increase": 0.04,
+    "min_games": 120
   }
 }

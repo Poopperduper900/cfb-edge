@@ -86,3 +86,59 @@ def box_week(season: int, week: int, team: str, rush: dict | None = None, rec: d
                                  category=cat, stat_type=stat, athlete_id=player, player=player,
                                  value=str(v), team_is_fbs=True))
     return pd.DataFrame(rows)
+
+
+# ------------------------------------------------------------- learning-loop data
+from scipy import stats as _st
+
+_XS = np.arange(-70, 71)
+
+
+def draw_margins(rng, exp_margin, exp_total, *, scale, df, sd_total_coef, keys, sd_ref=52.0, floor=8.0, cap=20.0):
+    """Margins from the key-number Student-t pmf, written independently of cfbmodel's own likelihood
+    code (scipy.stats.t, a plain grid, a plain normalisation)."""
+    exp_margin, exp_total = np.asarray(exp_margin, float), np.asarray(exp_total, float)
+    sd = np.clip(scale + sd_total_coef * (exp_total - sd_ref), floor, cap)[:, None]
+    mu = exp_margin[:, None]
+    pmf = _st.t.cdf((_XS[None, :] + 0.5 - mu) / sd, df) - _st.t.cdf((_XS[None, :] - 0.5 - mu) / sd, df)
+    bump = np.ones(len(_XS))
+    for k, w in keys.items():
+        bump[np.abs(_XS) == int(k)] *= w
+    bump[_XS == 0] = 0.0
+    pmf = pmf * bump[None, :]
+    cum = np.cumsum(pmf / pmf.sum(axis=1, keepdims=True), axis=1)
+    return _XS[(cum < rng.random(len(exp_margin))[:, None]).sum(axis=1).clip(0, len(_XS) - 1)].astype(float)
+
+
+def make_learn_data(seed: int, *, seasons=(2022, 2023, 2024), weeks=range(1, 13), games_per_week=60,
+                    market=None, model=None, totals=None, keys=None, with_early=False):
+    """LearnData-shaped frames whose true parameters are given. `market`/`model`/`totals` are dicts
+    of the truth; anything omitted uses the version-1 values (so 'nothing has changed')."""
+    from cfbmodel import learn
+    from cfbmodel.params import P
+    rng = np.random.default_rng(seed)
+    keys = keys or {int(k): v for k, v in P.margin.key_numbers.items()}
+    m = {"scale": P.margin.scale_market, "df": P.margin.df, "coef": P.margin.sd_total_coef, **(market or {})}
+    md = {"scale": P.margin.scale_model, "hfa": P.margin.hfa_points, **(model or {})}
+    t = {"sd_base": P.totals.sd_base, "coef": P.totals.sd_margin_coef, **(totals or {})}
+    rows_m, rows_w = [], []
+    for s in seasons:
+        for w in weeks:
+            n = games_per_week
+            spread = np.round(rng.normal(0, 11, n) * 2) / 2
+            tot = np.round(rng.normal(52, 7, n) * 2) / 2
+            margin = draw_margins(rng, -spread, tot, scale=m["scale"], df=m["df"], sd_total_coef=m["coef"], keys=keys)
+            sd_t = t["sd_base"] + t["coef"] * np.abs(spread)
+            actual = np.round(rng.normal(tot, sd_t))
+            rows_m.append(pd.DataFrame({"season": s, "week": w, "margin": margin, "actual_total": actual,
+                                        "spread_close": spread, "total_close": tot}))
+            core = rng.normal(0, 10, n)
+            neutral = rng.random(n) < 0.08
+            exp = core + md["hfa"] * (~neutral)
+            mm = draw_margins(rng, exp, tot, scale=md["scale"], df=m["df"], sd_total_coef=m["coef"], keys=keys)
+            line = -(np.round((exp + rng.normal(0, 5, n)) * 2) / 2)
+            wf = pd.DataFrame({"season": s, "week": w, "margin": mm, "actual_total": actual, "spread_close": line,
+                               "total_close": tot, "core_model": core, "neutral": neutral,
+                               "model_margin": exp, "core_unshrunk": core, "core_prior": np.nan})
+            rows_w.append(wf)
+    return learn.LearnData(market=pd.concat(rows_m, ignore_index=True), wf=pd.concat(rows_w, ignore_index=True))

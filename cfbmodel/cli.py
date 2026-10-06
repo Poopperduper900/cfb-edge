@@ -28,8 +28,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from . import (backtest, budget, edge, game_model, ingest, priors, props, qb,
-               playerstate, ratings, schema, script, state, teams, validation, week0, weather)
+from . import (backtest, budget, edge, game_model, ingest, learn, params, priors, props, qb,
+               playerstate, ratings, schema, script, state, status, teams, validation, week0, weather)
 from .config import C, OUTPUT
 from .params import P
 from .keys import MissingKeyError
@@ -127,38 +127,112 @@ def _prior_weights_by_season(seasons, ln, rec, rp, pt):
     return out
 
 
-def cmd_validate(args):
-    """The gate: does the model add information beyond the betting line? See validation.py."""
-    seasons = sorted(args.seasons)
+def _walk_forward_data(seasons):
+    """Load everything and run the walk-forward for `seasons`. Returns (games, lines, res)."""
     load = [seasons[0] - 1] + seasons
     ingest.set_current(season=max(seasons))
     g, ln, pbp = _load(load)
     allp = pd.concat(pbp.values(), ignore_index=True)
     print(f"loaded {len(g)} games, {len(allp):,} plays for {load[0]}-{load[-1]}")
-
     rec = {y: ingest.recruiting_teams(y) for y in range(load[0] - 3, load[-1] + 1)}
     rp = {y: ingest.returning_production(y) for y in load}
     pt = {y: _portal_or_empty(y) for y in load}
     weights = _prior_weights_by_season(seasons, ln, rec, rp, pt)
     prior = {s: state.preseason_prior_points(s, ln, rec, rp[s], pt[s], weights=weights[s][0]) for s in seasons}
-
     res = validation.walk_forward(g, ln, allp, seasons, prior_by_season=prior)
-    res.to_csv(OUTPUT / "walkforward.csv", index=False)
-    status = validation.run_validation(res)
-    report = validation.build_report(status, res)
-    report += "\nPreseason weights used per season: " + "; ".join(f"{s}: {w[1]}" for s, w in weights.items()) + "\n"
-    sp, rp_path = validation.write_outputs(status, report)
+    res.attrs["prior_weight_sources"] = {s: w[1] for s, w in weights.items()}
+    return g, ln, res
 
-    passed = [k for k, v in status["markets"].items() if v["passed"]]
-    passed_segs = [x for x in status["segments"] if x["passed"]]
+
+def cmd_validate(args):
+    """The gate: does the model add information beyond the betting line? See validation.py."""
+    seasons = sorted(args.seasons)
+    g, ln, res = _walk_forward_data(seasons)
+    res.to_csv(OUTPUT / "walkforward.csv", index=False)
+    status_ = validation.run_validation(res)
+    report = validation.build_report(status_, res)
+    report += "\nPreseason weights used per season: " + "; ".join(
+        f"{s}: {src}" for s, src in res.attrs["prior_weight_sources"].items()) + "\n"
+    sp, rp_path = validation.write_outputs(status_, report)
+
+    passed = [k for k, v in status_["markets"].items() if v["passed"]]
+    passed_segs = [x for x in status_["segments"] if x["passed"]]
     print(f"\nwalk-forward rows: {len(res)}   skipped weeks: {len(res.attrs.get('skipped', []))}")
-    if status["status"] == "SUSPECTED_LEAK":
+    if status_["status"] == "SUSPECTED_LEAK":
         print("!! SUSPECTED_LEAK: a model coefficient is above 0.5. Do not trust anything until this is explained.")
     if not passed and not passed_segs:
         print("RESULT: nothing passed. The market is not beaten (yet). The board will show no BET rows.")
     else:
         print(f"RESULT: markets passed: {passed or 'none'}; segments passed: {len(passed_segs)}")
     print(f"wrote {sp}\nwrote {rp_path}")
+
+
+def _market_frame(g: pd.DataFrame, ln: pd.DataFrame) -> pd.DataFrame:
+    """Every FBS-vs-FBS regular-season game that has a closing line and a result."""
+    mk = validation._market_numbers(ln)
+    d = g[g["homePoints"].notna() & g["week"].notna()]
+    if "season_type" in d.columns:
+        d = d[d["season_type"] == "regular"]
+    d = d[d["home_is_fbs"] & d["away_is_fbs"]]
+    d = d.merge(mk, left_on="id", right_index=True)
+    d = d.rename(columns={"total": "actual_total"})
+    return d.dropna(subset=["spread_close"])[["id", "season", "week", "margin", "actual_total", "spread_close",
+                                              "total_close", "spread_open", "total_open"]]
+
+
+def _optional_csv(name):
+    p = OUTPUT / name
+    return pd.read_csv(p) if p.exists() else None
+
+
+def cmd_learn(args):
+    """After week W has finished: re-learn formula parameters, but adopt a change only if it is
+    proven better out-of-sample (see learn.py). Usually the answer is 'no change'."""
+    s, w = args.season, args.week
+    seasons = sorted(args.seasons)
+    g, ln, res = _walk_forward_data(seasons)
+    data = learn.LearnData(market=_market_frame(g, ln), wf=res,
+                           weather=_optional_csv("weather_history.csv"), props=_optional_csv("prop_games.csv"))
+    rep = learn.run_learn(data, s, w + 1, full=args.full, force=args.even_if_not_due)
+    if not rep.due:
+        print("; ".join(rep.notes))
+        return
+    print(f"learning run for season {s}, after week {w}  (current version: {params.active_version()})\n")
+    for r in rep.results:
+        line = f"  {r.name:<14}{r.status:<9}"
+        if r.evidence.get("n_window"):
+            line += (f"gain {r.evidence['mean_gain']:+.5f}/game  CI [{r.evidence['ci_low']:+.5f}, "
+                     f"{r.evidence['ci_high']:+.5f}]  window {r.evidence['n_window']}")
+        print(line)
+        for why in r.reasons:
+            print(f"      - {why}")
+    print(f"\nNEW VERSION {rep.version}: see output/models/{rep.version}/diff.md" if rep.version
+          else "\nNo change: the current parameters stay.")
+
+    drift = learn.check_drift(res, s, w + 1)
+    learn.write_drift_status(drift)
+    print(f"drift check: {'ALARM, model weight forced to 0: ' if drift['active'] else 'ok. '}{drift['reason']}")
+    path = learn.write_postmortem(learn.postmortem(res, s, w), s, w)
+    print(f"wrote {path}")
+
+
+def cmd_models(args):
+    t = learn.models_table()
+    print(t.to_string(index=False))
+    print("\n* = current. Details of each learned version: output/models/<version>/diff.md")
+
+
+def cmd_rollback(args):
+    prev = learn.rollback(args.version)
+    print(f"current parameter version: {prev} -> {args.version}  (nothing was deleted; you can roll forward again)")
+
+
+def cmd_postmortem(args):
+    res = pd.read_csv(OUTPUT / "walkforward.csv")
+    text = learn.postmortem(res, args.season, args.week)
+    path = learn.write_postmortem(text, args.season, args.week)
+    print(text)
+    print(f"wrote {path}")
 
 
 def _portal_or_empty(season):
@@ -444,6 +518,26 @@ def main(argv=None):
     p.add_argument("--seasons", type=int, nargs="+", required=True)
     p.set_defaults(func=cmd_fit_priors)
 
+    p = sub.add_parser("learn", parents=[net], help="re-learn formula parameters; adopt only if proven better")
+    p.add_argument("--season", type=int, required=True)
+    p.add_argument("--week", type=int, required=True, help="the week that just finished")
+    p.add_argument("--seasons", type=int, nargs="+", required=True, help="seasons for the walk-forward, e.g. 2021 2022 ... 2026")
+    p.add_argument("--full", action="store_true", help="season-end run: also judge the early-season decay")
+    p.add_argument("--even-if-not-due", action="store_true", help="run even if it is not due yet")
+    p.set_defaults(func=cmd_learn)
+
+    p = sub.add_parser("models", help="list parameter versions")
+    p.set_defaults(func=cmd_models)
+
+    p = sub.add_parser("rollback", help="make an earlier parameter version current again")
+    p.add_argument("version")
+    p.set_defaults(func=cmd_rollback)
+
+    p = sub.add_parser("postmortem", help="what drove the biggest misses of a week")
+    p.add_argument("--season", type=int, required=True)
+    p.add_argument("--week", type=int, required=True)
+    p.set_defaults(func=cmd_postmortem)
+
     p = sub.add_parser("update", parents=[net], help="after week W: refit team ratings, update players")
     p.add_argument("--season", type=int, required=True)
     p.add_argument("--week", type=int, required=True, help="the week that just finished")
@@ -492,10 +586,11 @@ def main(argv=None):
     p.set_defaults(func=week0.run)
 
     args = ap.parse_args(argv)
-    ingest.configure(force=args.force, refresh=args.refresh)
+    ingest.configure(force=getattr(args, "force", False), refresh=getattr(args, "refresh", False))
     try:
         return args.func(args) or 0
-    except (ingest.CfbdError, budget.BudgetExceeded, schema.SchemaError) as e:
+    except (ingest.CfbdError, budget.BudgetExceeded, schema.SchemaError, learn.LearnError,
+            params.ParamsError) as e:
         print(f"\n{type(e).__name__}: {e}", file=sys.stderr)
         return 2
     except MissingKeyError as e:
