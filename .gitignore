@@ -8,3 +8,6 @@ data/cache/*
 output/*
 !output/.gitkeep
 .ipynb_checkpoints/
+
+# Test tooling
+.pytest_cache/
