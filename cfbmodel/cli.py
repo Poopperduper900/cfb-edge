@@ -253,6 +253,7 @@ def cmd_board(args):
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     csv_path.write_text(board_mod.to_csv(b))
     html_path.write_text(board_mod.to_html(b), encoding="utf-8")
+    (OUTPUT / f"board_{s}_w{w}.json").write_text(json.dumps(board_mod.to_meta(b), indent=2))
     print(board_mod.summary(b))
     n_logged = tracking.log_lines(wk_lines, s, w)
     print(f"\nwrote {csv_path}\nwrote {html_path}   (open it in a browser, or send it to your phone)"

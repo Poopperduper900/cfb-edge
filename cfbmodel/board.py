@@ -358,6 +358,12 @@ def to_csv(board: Board) -> str:
     return board.df.to_csv(index=False, float_format="%.4f")
 
 
+def to_meta(board: Board) -> dict:
+    """Banners and run facts as JSON (the dashboard reads this next to the CSV)."""
+    meta = {k: (None if isinstance(v, float) and np.isnan(v) else v) for k, v in board.meta.items()}
+    return {"banners": board.banners, "meta": meta}
+
+
 def summary(board: Board, top: int = 12) -> str:
     df = board.df
     counts = df["status"].value_counts().reindex(list(STATUS_ORDER), fill_value=0)
