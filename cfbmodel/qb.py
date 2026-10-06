@@ -33,7 +33,7 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from .ratings import as_of, clean_plays
+from .ratings import as_of, clean_plays, drop_non_fbs
 
 # EPA/dropback, FBS. Sample-weighted; QB play has widened since 2019.
 QB_EPA_MEAN = 0.115
@@ -44,7 +44,7 @@ GARBAGE_TIME_EPA_INFLATION = 0.055   # EPA/dropback is inflated in blowouts
 def qb_epa(pbp: pd.DataFrame, asof_season: int, asof_week: int,
            filter_garbage: bool = True) -> pd.DataFrame:
     """Per-QB EPA per dropback, with dropback counts."""
-    df = clean_plays(pbp) if filter_garbage else pbp.copy()
+    df = clean_plays(pbp) if filter_garbage else drop_non_fbs(pbp).copy()
     df = as_of(df, asof_season, asof_week)
     df["epa"] = pd.to_numeric(df.get("epa", df.get("ppa")), errors="coerce")
 

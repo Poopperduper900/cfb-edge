@@ -47,12 +47,28 @@ def as_of(df: pd.DataFrame, asof_season: int, asof_week: int) -> pd.DataFrame:
     return df[before]
 
 
+# Ridge penalises every column, including home-field advantage, so a large alpha drags HFA
+# toward zero (pitfall 3: 1.30 fitted vs 2.94 true). Scaling the column up by HFA_SCALE makes
+# the same penalty cost it almost nothing; the coefficient is scaled back after the fit.
+HFA_SCALE = 100.0
+
+
+def drop_non_fbs(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop rows involving a non-FBS team (pitfall 7), using the *_is_fbs flags ingest.py adds.
+    Frames without those flags (older/synthetic data) are returned unchanged."""
+    keep = pd.Series(True, index=df.index)
+    for col in ("offense_is_fbs", "defense_is_fbs", "home_is_fbs", "away_is_fbs", "team_is_fbs"):
+        if col in df.columns:
+            keep &= df[col].astype(bool)
+    return df[keep]
+
+
 # ------------------------------------------------------------ play filtering
 
 
 def clean_plays(pbp: pd.DataFrame) -> pd.DataFrame:
     """Filter to competitive, meaningful scrimmage plays with valid EPA."""
-    df = pbp.copy()
+    df = drop_non_fbs(pbp).copy()
 
     if "ppa" in df.columns and "epa" not in df.columns:
         df = df.rename(columns={"ppa": "epa"})
@@ -105,7 +121,8 @@ def recency_weights(df: pd.DataFrame, asof_season: int, asof_week: int) -> np.nd
 
 
 def fit_epa_ratings(
-    pbp: pd.DataFrame, asof_season: int, asof_week: int, split_pass_rush: bool = True
+    pbp: pd.DataFrame, asof_season: int, asof_week: int, split_pass_rush: bool = True,
+    alpha: float | None = None,
 ) -> pd.DataFrame:
     """
     Ridge regression:   epa_play ~ offense_team + defense_team + home + intercept
@@ -135,13 +152,14 @@ def fit_epa_ratings(
     vals[1::2] = 1.0   # +1: positive def coef == allows more EPA == bad defense
     X = sparse.csr_matrix((vals, (rows, cols)), shape=(n, 2 * p))
 
-    home_col = _home_indicator(df).reshape(-1, 1)
+    home_col = _home_indicator(df).reshape(-1, 1) * HFA_SCALE
     X = sparse.hstack([X, sparse.csr_matrix(home_col)]).tocsr()
 
     y = df["epa"].to_numpy()
     w = recency_weights(df, asof_season, asof_week)
 
-    model = Ridge(alpha=C.ridge_alpha_off, fit_intercept=True, solver="sparse_cg")
+    model = Ridge(alpha=C.ridge_alpha_off if alpha is None else alpha,
+                  fit_intercept=True, solver="sparse_cg")
     model.fit(X, y, sample_weight=w)
     coef = model.coef_
 
@@ -165,7 +183,7 @@ def fit_epa_ratings(
             out[f"def_epa_{label}"] = sub["def"].reindex(out["team"]).values
 
     out["pace"] = _pace(df).reindex(out["team"]).values
-    out["hfa_league"] = float(coef[-1])
+    out["hfa_league"] = float(coef[-1]) * HFA_SCALE
     return out.set_index("team")
 
 
@@ -207,7 +225,8 @@ def _pace(df: pd.DataFrame) -> pd.Series:
 
 
 def fit_market_ratings(
-    lines_df: pd.DataFrame, asof_season: int, asof_week: int, half_life_weeks: float = 5.0
+    lines_df: pd.DataFrame, asof_season: int, asof_week: int, half_life_weeks: float = 5.0,
+    alpha: float = 1.0,
 ) -> pd.DataFrame:
     """
     Least-squares power ratings from closing spreads:
@@ -219,7 +238,7 @@ def fit_market_ratings(
     the way the market would. That is the actual engine of early-week edge:
     you are not beating the closer, you are beating the number before it forms.
     """
-    df = lines_df.dropna(subset=["spread_close"]).copy()
+    df = drop_non_fbs(lines_df.dropna(subset=["spread_close"])).copy()
     df = as_of(df, asof_season, asof_week)
     df = df.groupby(["gameId", "home", "away", "season", "week"], as_index=False)[
         "spread_close"
@@ -234,26 +253,26 @@ def fit_market_ratings(
     X = np.zeros((n, p + 1))
     X[np.arange(n), df["home"].map(idx)] = 1.0
     X[np.arange(n), df["away"].map(idx)] = -1.0
-    X[:, -1] = 1.0  # HFA
+    X[:, -1] = HFA_SCALE  # HFA column, scaled so the ridge penalty does not shrink it
 
     y = -df["spread_close"].to_numpy()  # market's expected home margin
 
     back = (asof_season - df["season"]) * 16 + (asof_week - df["week"])
     w = 0.5 ** (np.clip(back, 0, None) / half_life_weeks)
 
-    m = Ridge(alpha=1.0, fit_intercept=False)
+    m = Ridge(alpha=alpha, fit_intercept=False)
     m.fit(X, y, sample_weight=w)
 
     r = pd.Series(m.coef_[:p], index=teams, name="market_rating")
     r = r - r.mean()
     out = r.to_frame()
-    out["market_hfa"] = float(m.coef_[-1])
+    out["market_hfa"] = float(m.coef_[-1]) * HFA_SCALE
     return out
 
 
 def fit_total_ratings(lines_df: pd.DataFrame, asof_season: int, asof_week: int) -> pd.DataFrame:
     """Same trick for totals: team scoring + team scoring-allowed environment."""
-    df = lines_df.dropna(subset=["total_close"]).copy()
+    df = drop_non_fbs(lines_df.dropna(subset=["total_close"])).copy()
     df = as_of(df, asof_season, asof_week)
     df = df.groupby(["gameId", "home", "away", "season", "week"], as_index=False)[
         "total_close"

@@ -94,12 +94,18 @@ def team_play_estimate(pace_home: float, pace_away: float, exp_total: float) -> 
     return base * scale, base * scale
 
 
-def pass_rate_over_expectation(exp_margin_for_team: float, base_pass_rate: float) -> float:
+def pass_rate_over_expectation(exp_margin_for_team: float, base_pass_rate: float,
+                               lead_factor: float = 0.45) -> float:
     """
-    Trailing teams throw; leading teams run. Effect is steeper in CFB than the
-    NFL because leads are larger and clock-killing starts earlier.
+    Trailing teams throw; leading teams run. Effect is steeper in CFB than the NFL because
+    leads are larger and clock-killing starts earlier.
+
+    The slope acts on the AVERAGE lead during the game, not the final margin (pitfall 6): a team
+    that wins by 24 was not up 24 for four quarters. Empirically the time-averaged lead is about
+    45% of the final margin (`lead_factor`; script.simulate_game_script uses the same number).
+    Using the final margin makes big favourites' RBs project above their neutral baseline.
     """
-    delta = -0.0095 * exp_margin_for_team
+    delta = -0.0095 * lead_factor * exp_margin_for_team
     return float(np.clip(base_pass_rate + delta, 0.22, 0.78))
 
 

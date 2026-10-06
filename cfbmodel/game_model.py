@@ -35,8 +35,11 @@ def project_game(
     home_qb_out: bool = False,
     away_qb_out: bool = False,
     venue_hfa: float | None = None,
+    dome: bool = False,
 ) -> dict:
-    """Return projected home margin, total, and the adjustments that produced them."""
+    """Return projected home margin, total, and the adjustments that produced them.
+
+    `dome=True` zeroes every weather term (wind, precipitation, cold); pitfall 10."""
     if home not in ratings.index or away not in ratings.index:
         raise KeyError(f"missing rating for {home!r} or {away!r}")
 
@@ -86,12 +89,13 @@ def project_game(
         total = 52.0 + 0.25 * ((pace + pace2) - 2 * C.pace_mean)
 
     tot_adj = {}
-    if wind_mph > 12:
-        tot_adj["wind"] = -0.42 * (wind_mph - 12)   # steep and real
-    if precip:
-        tot_adj["precip"] = -1.1
-    if temp_f is not None and temp_f < 32:
-        tot_adj["cold"] = -0.05 * (32 - temp_f)
+    if not dome:
+        if wind_mph > 12:
+            tot_adj["wind"] = -0.42 * (wind_mph - 12)   # steep and real
+        if precip:
+            tot_adj["precip"] = -1.1
+        if temp_f is not None and temp_f < 32:
+            tot_adj["cold"] = -0.05 * (32 - temp_f)
     if alt >= 4000:
         tot_adj["altitude"] = 1.4
     if home_qb_out or away_qb_out:

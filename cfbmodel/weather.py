@@ -141,27 +141,39 @@ def game_weather(
 def attach_weather(
     games_df: pd.DataFrame, venues_df: pd.DataFrame, mode: str = "forecast"
 ) -> pd.DataFrame:
-    """Join venue coordinates onto games and pull weather for each."""
-    v = venues_df.rename(columns={"name": "venue"})
+    """Join venue coordinates onto games and pull weather for each.
+
+    A game is indoors if CFBD's venue record says `dome` is True. Only when CFBD leaves the flag
+    blank do we fall back to the hand-typed DOME_VENUES name list; `dome_source` records which
+    one decided. Indoor games never trigger a forecast request (pitfall 10)."""
+    v = venues_df.rename(columns={"name": "venue"}).drop_duplicates("venue")
     coord = v.set_index("venue")[["location.x", "location.y"]] if "location.x" in v else None
     if coord is None:
         coord = v.set_index("venue")[["longitude", "latitude"]]
         coord.columns = ["location.x", "location.y"]
+    flags = v.set_index("venue")["dome"] if "dome" in v.columns else pd.Series(dtype=object)
 
     rows = []
     for _, g in games_df.iterrows():
         venue = g.get("venue")
-        if venue in DOME_VENUES:
-            rows.append({"gameId": g.get("id"), "dome": True, "wind_mph": 0.0,
+        flag = flags.get(venue) if venue in flags.index else None
+        if flag is True or flag is False:
+            is_dome, source = bool(flag), "venue_flag"
+        else:
+            is_dome, source = venue in DOME_VENUES, "name_list"
+        if is_dome:
+            rows.append({"gameId": g.get("id"), "dome": True, "dome_source": source, "wind_mph": 0.0,
                          "temp_f": 70.0, "precip_in": 0.0, "wx_confidence": 1.0,
                          "wx_status": "dome"})
             continue
         if venue not in coord.index:
-            rows.append({"gameId": g.get("id"), "dome": False, "wx_status": "no_venue_coordinates"})
+            rows.append({"gameId": g.get("id"), "dome": False, "dome_source": source,
+                         "wx_status": "no_venue_coordinates"})
             continue
         lon, lat = coord.loc[venue, "location.x"], coord.loc[venue, "location.y"]
         wx = game_weather(float(lat), float(lon), g["start_date"], mode=mode)
-        wx.update(gameId=g.get("id"), dome=False, wx_status="ok" if wx else "no_hourly_data",
+        wx.update(gameId=g.get("id"), dome=False, dome_source=source,
+                  wx_status="ok" if wx else "no_hourly_data",
                   wx_confidence=forecast_confidence(wx.get("hours_ahead", 0.0)))
         rows.append(wx)
     return games_df.merge(pd.DataFrame(rows), left_on="id", right_on="gameId", how="left")
