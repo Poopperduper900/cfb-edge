@@ -22,6 +22,7 @@ import numpy as np
 
 from . import edge, game_model
 from .config import C
+from .params import P
 
 HEAVY_FAVOURITE = -400.0
 KEY_NUMBERS = (3, 4, 6, 7, 10, 14, 17, 21)
@@ -55,9 +56,9 @@ def devig_method(odds: list[float], market: str) -> str:
 
 def sample_confidence(weeks_of_data: float) -> float:
     """How much to trust a rating built from this many weeks of results: n / (n + k), never
-    below 0.25. Week 0 ratings are pure priors; by week 12 about 3/4 confidence."""
+    below betting.sample_conf_floor. Week 0 ratings are pure priors; by week 12 about 3/4 confidence."""
     n = max(float(weeks_of_data), 0.0)
-    return float(max(n / (n + C.sample_conf_k), 0.25))
+    return float(max(n / (n + C.sample_conf_k), P.betting.sample_conf_floor))
 
 
 def shrink_factor(softness: float, sample_conf: float) -> float:

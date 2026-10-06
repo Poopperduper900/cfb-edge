@@ -34,6 +34,7 @@ import pandas as pd
 import requests
 
 from .config import CACHE
+from .params import P
 
 ARCHIVE = "https://archive-api.open-meteo.com/v1/archive"        # ERA5 reanalysis
 HIST_FORECAST = "https://historical-forecast-api.open-meteo.com/v1/forecast"
@@ -190,10 +191,11 @@ def forecast_confidence(hours_ahead: float) -> float:
     of the money is already down by the time the forecast is trustworthy.
     """
     h = max(float(hours_ahead), 0.0)
-    return float(np.clip(1.0 - 0.006 * h, 0.35, 1.0))
+    W = P.weather
+    return float(np.clip(1.0 - W.confidence_per_hour * h, W.confidence_floor, 1.0))
 
 
-def total_adjustment(wx: dict, base_sd: float = 12.6) -> tuple[float, float]:
+def total_adjustment(wx: dict) -> tuple[float, float]:
     """
     Returns (points off the total, extra SD).
 
@@ -208,6 +210,7 @@ def total_adjustment(wx: dict, base_sd: float = 12.6) -> tuple[float, float]:
     """
     if wx.get("dome") or not wx:
         return 0.0, 0.0
+    W = P.weather
     conf = wx.get("wx_confidence", 1.0)
     wind = wx.get("wind_mph") or 0.0
     gust = wx.get("gust_mph") or wind
@@ -215,14 +218,14 @@ def total_adjustment(wx: dict, base_sd: float = 12.6) -> tuple[float, float]:
     temp = wx.get("temp_f")
 
     pts = 0.0
-    if wind > 10:
-        pts -= 0.34 * (wind - 10)
-    if gust > 22:
-        pts -= 0.18 * (gust - 22)
-    if precip > 0.10:
-        pts -= 1.2 * min(precip / 0.25, 2.5)
-    if temp is not None and temp < 25:
-        pts -= 0.04 * (25 - temp)
+    if wind > W.wind_threshold_mph:
+        pts -= W.wind_coef * (wind - W.wind_threshold_mph)
+    if gust > W.gust_threshold_mph:
+        pts -= W.gust_coef * (gust - W.gust_threshold_mph)
+    if precip > W.precip_threshold_in:
+        pts -= W.precip_coef * min(precip / W.precip_ref_in, W.precip_cap_units)
+    if temp is not None and temp < W.cold_threshold_f:
+        pts -= W.cold_coef * (W.cold_threshold_f - temp)
 
-    extra_sd = 0.9 if wind > 18 else 0.0
+    extra_sd = W.extra_sd if wind > W.extra_sd_wind_mph else 0.0
     return float(pts * conf), float(extra_sd)

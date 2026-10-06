@@ -30,6 +30,7 @@ import pandas as pd
 
 from .config import C
 from .game_model import margin_pmf
+from .params import P
 from .ratings import as_of
 
 RNG = np.random.default_rng(20260829)
@@ -57,12 +58,13 @@ def role_instability(
     number.
     """
     n = len(share_history)
+    S = P.script
     if n == 0:
-        return 0.50
+        return S.role_default_sigma
 
-    base = 0.42 / np.sqrt(n)                      # sample-size term
+    base = S.role_base / np.sqrt(n)                      # sample-size term
     vol = float(np.std(share_history)) / max(float(np.mean(share_history)), 1e-3)
-    vol_term = 0.55 * np.clip(vol, 0.0, 1.2)      # observed share volatility
+    vol_term = S.role_volatility * np.clip(vol, 0.0, S.role_volatility_cap)      # observed share volatility
 
     # Role security. Raw HHI is the wrong scale here: a genuine bell cow with
     # 61% of carries in a three-man room has HHI ~0.45, nowhere near 1.0, so an
@@ -70,13 +72,13 @@ def role_instability(
     # the constant it replaced. The player's OWN share is the direct measure of
     # whether the role is secure. 0.65 is treated as fully established.
     own = float(np.mean(share_history)) if own_share is None else float(own_share)
-    committee_term = 0.28 * (1.0 - np.clip(own / 0.65, 0.0, 1.0))
+    committee_term = S.role_committee * (1.0 - np.clip(own / S.role_secure_share, 0.0, 1.0))
 
-    return float(np.clip(base + vol_term + committee_term, 0.10, 0.60))
+    return float(np.clip(base + vol_term + committee_term, S.role_min_sigma, S.role_max_sigma))
 
 
 def derive_depth_chart(box: pd.DataFrame, team: str, asof_season: int, asof_week: int,
-                       lookback: int = 4) -> pd.DataFrame:
+                       lookback: int | None = None) -> pd.DataFrame:
     """
     An empirical depth chart from who actually touched the ball, rather than a
     published one.
@@ -88,6 +90,7 @@ def derive_depth_chart(box: pd.DataFrame, team: str, asof_season: int, asof_week
     """
     d = box[(box["team"] == team)].copy()
     d = as_of(d, asof_season, asof_week)
+    lookback = P.script.depth_lookback_weeks if lookback is None else lookback
     d = d[d["week"] >= asof_week - lookback]
     d["value"] = pd.to_numeric(d["value"], errors="coerce")
 
@@ -119,7 +122,7 @@ def simulate_game_script(
     exp_margin_for_team: float,
     exp_total: float,
     base_pace: float,
-    base_pass_rate: float = 0.45,
+    base_pass_rate: float | None = None,
     n_sims: int = 40_000,
 ) -> dict:
     """
@@ -131,15 +134,18 @@ def simulate_game_script(
     script — all correlated, as they are in reality. The old code treated each
     of those as an independent average.
     """
+    S = P.script
+    base_pass_rate = S.base_pass_rate if base_pass_rate is None else base_pass_rate
     xs, pmf = margin_pmf(exp_margin_for_team, exp_total)
     margins = RNG.choice(xs, size=n_sims, p=pmf)
 
     # Total plays fall in blowouts (running clock, kneel-downs) and rise
     # modestly in shootouts. Effect is real but small; the big effect is on
     # *who* runs them.
-    play_mult = 1.0 + 0.0022 * (exp_total - 52.0) - 0.0035 * np.abs(margins)
-    plays = base_pace * np.clip(play_mult, 0.80, 1.15)
-    plays = plays * RNG.lognormal(-0.5 * 0.07**2, 0.07, n_sims)
+    play_mult = (1.0 + S.play_total_slope * (exp_total - S.play_total_ref)
+                 - S.play_margin_slope * np.abs(margins))
+    plays = base_pace * np.clip(play_mult, S.play_mult_lo, S.play_mult_hi)
+    plays = plays * RNG.lognormal(-0.5 * S.play_noise_sigma**2, S.play_noise_sigma, n_sims)
 
     # Pass rate over expectation: trailing teams throw, leading teams run.
     #
@@ -149,18 +155,18 @@ def simulate_game_script(
     # the final margin. Using the final margin here inflates the run-heavy
     # script so badly that a 24-point favourite's RB projects ABOVE his neutral-
     # script baseline, which is the opposite of what happens.
-    effective_lead = 0.45 * margins
-    pass_rate = np.clip(base_pass_rate - 0.0095 * effective_lead, 0.20, 0.80)
+    effective_lead = S.lead_factor * margins
+    pass_rate = np.clip(base_pass_rate - S.proe_slope * effective_lead, S.pass_rate_lo, S.pass_rate_hi)
 
     # Benching. A hazard on the realised margin, not on its expectation.
     # Below ~17 nobody sits; past ~35 the starters are in headsets.
     lead = np.abs(margins)
-    p_pull = np.clip((lead - 14.0) / 22.0, 0.0, 0.95)
+    p_pull = np.clip((lead - S.pull_start) / S.pull_span, 0.0, S.pull_cap)
     pulled = RNG.random(n_sims) < p_pull
     # If pulled, you lose a random share of what remains, not a fixed one. The
     # beta is right-shifted because benchings that happen at all tend to happen
     # by early in the fourth, not with two minutes left.
-    lost = np.where(pulled, RNG.beta(2.6, 1.9, n_sims) * 0.62, 0.0)
+    lost = np.where(pulled, RNG.beta(S.bench_beta_a, S.bench_beta_b, n_sims) * S.bench_max_loss, 0.0)
     volume_mult = 1.0 - lost
 
     return {
@@ -208,8 +214,11 @@ def simulate_rec_yards_joint(
     catch_rate: float,
     shock_sigma: float,
     p_play: float = 1.0,
-    share_pull_sensitivity: float = 0.7,
+    share_pull_sensitivity: float | None = None,
 ) -> dict:
+    S = P.script
+    if share_pull_sensitivity is None:
+        share_pull_sensitivity = S.rec_pull_sensitivity
     n = len(script["margin"])
     mult = 1.0 - share_pull_sensitivity * (1.0 - script["volume_mult"])
     shock = RNG.lognormal(-0.5 * shock_sigma**2, shock_sigma, n)
@@ -219,7 +228,7 @@ def simulate_rec_yards_joint(
     recs = RNG.binomial(tgts, catch_rate)
 
     ypr = ypt / max(catch_rate, 1e-3)
-    sigma = np.sqrt(np.log1p(0.95**2))
+    sigma = np.sqrt(np.log1p(S.rec_yards_cv**2))
     mu = np.log(ypr) - 0.5 * sigma**2
     maxr = int(recs.max()) if recs.size else 0
     if maxr == 0:
@@ -231,8 +240,9 @@ def simulate_rec_yards_joint(
 
 def _carry_yards(carries: np.ndarray, ypc: float, ypc_sd: float) -> np.ndarray:
     n = len(carries)
-    p_break, bshape, bscale, shift = 0.021, 3.0, 12.0, 1.2
-    base_mean = max(ypc + shift - p_break * bshape * bscale, 0.4)
+    S = P.script
+    p_break, bshape, bscale, shift = S.p_break, S.break_shape, S.break_scale, S.carry_shift
+    base_mean = max(ypc + shift - p_break * bshape * bscale, S.carry_min_mean)
     shape = max((base_mean / max(ypc_sd, 1e-3)) ** 2, 0.05)
     scale = max(base_mean / shape, 1e-3)
     maxc = int(carries.max()) if carries.size else 0

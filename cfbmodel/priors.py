@@ -30,19 +30,17 @@ import pandas as pd
 from sklearn.linear_model import RidgeCV
 
 from . import config, ratings as _ratings
+from .params import P
 
 
 PRIOR_FEATURES = ["prior_rating", "recruiting", "returning", "portal"]
 
-# Starting guess ONLY. Real weights come from `python -m cfbmodel fit-priors`, which writes
-# output/prior_weights.json; build_preseason_ratings uses that file when it exists and records
-# in `out.attrs["weights_source"]` which of the two it used.
-DEFAULT_WEIGHTS = {
-    "prior_rating": 0.45,
-    "returning": 0.25,
-    "recruiting": 0.20,
-    "portal": 0.10,
-}
+# DEFAULT_WEIGHTS (the unfitted starting blend) and POSITION_VALUE (portal position multipliers)
+# live in the registry as priors.default_weights and priors.position_value; the names below are
+# read through __getattr__ at the bottom of this file so older imports keep working. Real weights
+# come from `python -m cfbmodel fit-priors`, which writes output/prior_weights.json;
+# build_preseason_ratings uses that file when it exists and records in
+# `out.attrs["weights_source"]` which of the two it used.
 
 
 def rolling_recruiting(recruit_by_year: dict[int, pd.DataFrame], season: int, n_years: int = 4) -> pd.Series:
@@ -51,14 +49,14 @@ def rolling_recruiting(recruit_by_year: dict[int, pd.DataFrame], season: int, n_
     likely to be on the field (years 2-4 of a class matter more than the
     true freshmen who just signed).
     """
-    class_weights = {0: 0.15, 1: 0.30, 2: 0.30, 3: 0.25}
+    class_weights = {int(k): v for k, v in P.priors.class_weights.items()}
     acc, wsum = {}, {}
     for back in range(n_years):
         yr = season - back
         df = recruit_by_year.get(yr)
         if df is None or df.empty:
             continue
-        w = class_weights.get(back, 0.1)
+        w = class_weights.get(back, P.priors.class_weight_default)
         for _, r in df.iterrows():
             t = r.get("team")
             pts = float(r.get("points") or 0.0)
@@ -79,19 +77,10 @@ def returning_production_score(rp: pd.DataFrame) -> pd.Series:
     cols = {c.lower(): c for c in df.columns}
     tot = df[cols.get("totalppa", list(df.columns)[-1])].astype(float)
     pass_p = df[cols["passingppa"]].astype(float) if "passingppa" in cols else tot
-    s = pd.Series((0.6 * _zv(tot) + 0.4 * _zv(pass_p)), index=df[cols.get("team", "team")])
+    Q = P.priors
+    s = pd.Series((Q.returning_total_weight * _zv(tot) + Q.returning_pass_weight * _zv(pass_p)),
+                  index=df[cols.get("team", "team")])
     return s.rename("returning")
-
-
-# Positional value multipliers for portal transfers. Roughly the marginal
-# points-per-season a starter at each position is worth relative to a
-# replacement-level starter — the same shape as NFL positional value, but with a
-# steeper QB premium because CFB backup quality falls off a cliff.
-POSITION_VALUE = {
-    "QB": 4.6, "OT": 2.1, "EDGE": 2.0, "DE": 2.0, "CB": 1.8, "WR": 1.6,
-    "DT": 1.5, "OL": 1.5, "OG": 1.3, "C": 1.3, "S": 1.2, "LB": 1.1,
-    "TE": 1.0, "RB": 0.8, "K": 0.4, "P": 0.3, "LS": 0.1,
-}
 
 
 def portal_score(
@@ -123,15 +112,16 @@ def portal_score(
         return pd.Series(dtype=float, name="portal")
 
     df = portal_df.copy()
-    df["rating"] = pd.to_numeric(df.get("rating"), errors="coerce").fillna(0.84)
+    Q = P.priors
+    df["rating"] = pd.to_numeric(df.get("rating"), errors="coerce").fillna(Q.portal_default_rating)
     df["pos"] = df.get("position", pd.Series("LB", index=df.index)).fillna("LB").str.upper()
-    df["pos_mult"] = df["pos"].map(POSITION_VALUE).fillna(1.0)
+    df["pos_mult"] = df["pos"].map(Q.position_value).fillna(Q.position_default_mult)
 
     # base value from stars (fallback path)
     star_val = np.where(
-        df["rating"] > 0.95, 4.0,
-        np.where(df["rating"] > 0.90, 2.5,
-                 np.where(df["rating"] > 0.85, 1.2, 0.4)),
+        df["rating"] > Q.star_elite_rating, Q.star_elite_value,
+        np.where(df["rating"] > Q.star_great_rating, Q.star_great_value,
+                 np.where(df["rating"] > Q.star_good_rating, Q.star_good_value, Q.star_base_value)),
     )
 
     if prior_production is not None and not prior_production.empty:
@@ -145,8 +135,8 @@ def portal_score(
         # production value, z-scored within the transfer pool, credibility-
         # weighted by snaps so a 40-snap sample doesn't outrank a full season
         prod_z = _zv(df["ppa"].fillna(np.nanmean(df["ppa"])))
-        cred = (df["snaps"].fillna(0) / (df["snaps"].fillna(0) + 200.0)).to_numpy()
-        prod_val = 2.0 + 2.2 * np.clip(prod_z, -2.0, 2.5)
+        cred = (df["snaps"].fillna(0) / (df["snaps"].fillna(0) + Q.production_credibility_snaps)).to_numpy()
+        prod_val = Q.production_base + Q.production_slope * np.clip(prod_z, Q.production_z_lo, Q.production_z_hi)
         val = cred * prod_val + (1 - cred) * star_val
     else:
         val = star_val
@@ -165,13 +155,14 @@ def build_preseason_ratings(
     returning: pd.Series,
     portal: pd.Series,
     weights: dict | None = None,
-    scale_points: float = 11.0,
+    scale_points: float | None = None,
 ) -> pd.DataFrame:
     """
     Combine into a points-scale preseason rating. scale_points is the SD of the
     resulting distribution in points; ~11 matches the observed spread of FBS
     team strength (best team ~ +30, worst ~ -30 against average).
     """
+    scale_points = P.priors.scale_points if scale_points is None else scale_points
     if weights is None:
         weights, weights_source = load_prior_weights()
     else:
@@ -206,7 +197,7 @@ def fit_prior_weights(history: pd.DataFrame) -> dict:
     m.fit(d[feats], d["target"])
     raw = np.maximum(m.coef_, 0)
     if raw.sum() == 0:
-        return DEFAULT_WEIGHTS
+        return dict(P.priors.default_weights)
     return dict(zip(feats, (raw / raw.sum()).round(3)))
 
 
@@ -220,7 +211,7 @@ def load_prior_weights(path: Path | None = None) -> tuple[dict, str]:
     p = Path(path) if path else prior_weights_path()
     if p.exists():
         return json.loads(p.read_text())["weights"], "fitted"
-    return dict(DEFAULT_WEIGHTS), "default_unfitted"
+    return dict(P.priors.default_weights), "default_unfitted"
 
 
 def save_prior_weights(weights: dict, cv: dict, seasons: list[int], path: Path | None = None,
@@ -319,3 +310,12 @@ def _zv(v) -> np.ndarray:
     v = np.asarray(v, dtype=float)
     sd = np.nanstd(v)
     return (v - np.nanmean(v)) / sd if sd > 0 else v * 0.0
+
+
+_REGISTRY_NAMES = {"DEFAULT_WEIGHTS": "default_weights", "POSITION_VALUE": "position_value"}
+
+
+def __getattr__(name):          # PEP 562: priors.DEFAULT_WEIGHTS / priors.POSITION_VALUE
+    if name in _REGISTRY_NAMES:
+        return getattr(P.priors, _REGISTRY_NAMES[name])
+    raise AttributeError(name)

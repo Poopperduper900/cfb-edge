@@ -33,12 +33,11 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .params import P
 from .ratings import as_of, clean_plays, drop_non_fbs
 
-# EPA/dropback, FBS. Sample-weighted; QB play has widened since 2019.
-QB_EPA_MEAN = 0.115
-QB_EPA_SD = 0.145
-GARBAGE_TIME_EPA_INFLATION = 0.055   # EPA/dropback is inflated in blowouts
+# QB_EPA_MEAN and GARBAGE_TIME_EPA_INFLATION used to be constants here; they are registry
+# parameters now (P.qb.epa_mean, P.qb.garbage_inflation).
 
 
 def qb_epa(pbp: pd.DataFrame, asof_season: int, asof_week: int,
@@ -58,16 +57,18 @@ def qb_epa(pbp: pd.DataFrame, asof_season: int, asof_week: int,
     return g.reset_index().rename(columns={"passer": "qb", "offense": "team"})
 
 
-def shrunk_qb_value(epa_db: float, dropbacks: float, k: float = 180.0) -> float:
+def shrunk_qb_value(epa_db: float, dropbacks: float, k: float | None = None) -> float:
     """
     Empirical-Bayes shrinkage toward the FBS mean. k=180 dropbacks is roughly
     where QB EPA stabilises — about five games. Anything under 100 dropbacks is
     mostly noise and gets pulled hard toward the mean, which is correct.
     """
+    Q = P.qb
+    k = Q.shrink_k if k is None else k
     if dropbacks < 1:
-        return QB_EPA_MEAN
+        return Q.epa_mean
     w = dropbacks / (dropbacks + k)
-    return float(w * epa_db + (1 - w) * QB_EPA_MEAN)
+    return float(w * epa_db + (1 - w) * Q.epa_mean)
 
 
 def backup_prior(
@@ -87,15 +88,17 @@ def backup_prior(
     a top-10 run game behind a veteran line is a fundamentally different problem
     from a backup on a bad roster.
     """
-    r = 0.85 if recruit_rating is None else float(recruit_rating)
-    rec_term = np.clip((r - 0.85) / 0.13, -1.2, 1.6) * 0.045
+    Q = P.qb
+    r = Q.recruit_default if recruit_rating is None else float(recruit_rating)
+    rec_term = np.clip((r - Q.recruit_center) / Q.recruit_scale, Q.recruit_lo, Q.recruit_hi) * Q.recruit_weight
 
-    year_term = {"FR": -0.045, "SO": -0.020, "JR": -0.005, "SR": 0.005}.get(
-        (class_year or "SO")[:2].upper(), -0.020
+    year_term = {"FR": Q.year_fr, "SO": Q.year_so, "JR": Q.year_jr, "SR": Q.year_sr}.get(
+        (class_year or "SO")[:2].upper(), Q.year_default
     )
-    supporting = 0.35 * np.clip(team_off_rating_ex_qb, -2.0, 2.0) * 0.03
+    supporting = Q.supporting_weight * np.clip(team_off_rating_ex_qb, -Q.supporting_clip, Q.supporting_clip) \
+        * Q.supporting_scale
 
-    return float(QB_EPA_MEAN - 0.075 + rec_term + year_term + supporting)
+    return float(Q.epa_mean + Q.backup_offset + rec_term + year_term + supporting)
 
 
 def dropoff_points(
@@ -106,7 +109,7 @@ def dropoff_points(
     backup_recruit: float | None = None,
     backup_class: str | None = None,
     team_off_rating_ex_qb: float = 0.0,
-    dropbacks_per_game: float = 33.0,
+    dropbacks_per_game: float | None = None,
 ) -> dict:
     """
     Points of line movement from a QB change, plus the uncertainty around it.
@@ -115,22 +118,24 @@ def dropoff_points(
     behaviour. A dropoff of 6.5 +/- 4.0 points means the line is now a coin flip
     with wider tails, and the correct action in most such spots is no action.
     """
+    Q = P.qb
+    dropbacks_per_game = Q.dropbacks_per_game if dropbacks_per_game is None else dropbacks_per_game
     s = shrunk_qb_value(starter_epa, starter_dropbacks)
 
-    if backup_epa is not None and backup_dropbacks >= 150:
+    if backup_epa is not None and backup_dropbacks >= Q.tier1_min_dropbacks:
         b = shrunk_qb_value(backup_epa, backup_dropbacks)
-        b -= GARBAGE_TIME_EPA_INFLATION * np.clip(1.0 - backup_dropbacks / 250.0, 0, 1)
-        tier, sd = 1, 2.4
+        b -= Q.garbage_inflation * np.clip(1.0 - backup_dropbacks / Q.inflation_fade_dropbacks, 0, 1)
+        tier, sd = 1, Q.tier1_sd
     elif backup_epa is not None and backup_dropbacks > 0:
-        obs = shrunk_qb_value(backup_epa, backup_dropbacks) - GARBAGE_TIME_EPA_INFLATION
+        obs = shrunk_qb_value(backup_epa, backup_dropbacks) - Q.garbage_inflation
         pri = backup_prior(backup_recruit, backup_class, team_off_rating_ex_qb)
-        w = backup_dropbacks / (backup_dropbacks + 120.0)
-        b, tier, sd = w * obs + (1 - w) * pri, 2, 3.4
+        w = backup_dropbacks / (backup_dropbacks + Q.tier2_k)
+        b, tier, sd = w * obs + (1 - w) * pri, 2, Q.tier2_sd
     else:
         b = backup_prior(backup_recruit, backup_class, team_off_rating_ex_qb)
-        tier, sd = 3, 4.6
+        tier, sd = 3, Q.tier3_sd
 
-    pts = float(np.clip((s - b) * dropbacks_per_game, -2.0, 16.0))
+    pts = float(np.clip((s - b) * dropbacks_per_game, Q.points_min, Q.points_max))
     return {
         "points": round(pts, 2),
         "sd_points": sd,

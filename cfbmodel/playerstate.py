@@ -29,22 +29,36 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
+from .params import P
+
 # group -> (box-score category, touch stat, yards stat)
 GROUPS = {"rush": ("rushing", "CAR", "YDS"), "rec": ("receiving", "REC", "YDS")}
 
-# Position priors. Per-touch mean, between-player variance and per-touch sd come from
-# props.POS_PRIORS (receiving converted from per-target to per-reception by the 0.635 catch
-# rate). Usage prior strength is in team touches (about one game).
-EFF_PRIOR = {
-    "rush": dict(mean=4.72, tau2=0.55, sigma=6.4),
-    "rec": dict(mean=7.95 / 0.635, tau2=1.85 / 0.635 ** 2, sigma=9.1 / 0.635),
-}
-NEW_PLAYER_SHARE = 0.10          # prior usage share for someone we have never seen
-NEW_PLAYER_STRENGTH = 30.0       # prior strength (team touches) for new players
-ROLE_CHANGE_RETENTION = 0.4      # share of old evidence kept after a role change
-SEASON_CARRY = 0.5               # share of last season's evidence kept into a new season
-TRANSFER_SHRINK = 0.5            # how far a transfer's old efficiency is pulled to the average
-TRANSFER_WIDEN = 1.5             # prior variance multiplier for transfers
+class _EffPrior:
+    """Per-touch yardage priors by group, from the registry (props.* position priors; receiving is
+    converted from per-target to per-reception with the catch rate)."""
+
+    def __getitem__(self, group: str) -> dict:
+        q = P.props
+        if group == "rush":
+            return dict(mean=q.rush_ypc_mean, tau2=q.rush_ypc_var, sigma=q.rush_ypc_sd)
+        c = q.catch_rate_mean
+        return dict(mean=q.rec_ypt_mean / c, tau2=q.rec_ypt_var / c ** 2, sigma=q.rec_ypt_sd / c)
+
+
+EFF_PRIOR = _EffPrior()
+
+# Registry names (group `player`) behind the module constants older code and tests refer to.
+_REGISTRY_NAMES = {"NEW_PLAYER_SHARE": "new_player_share", "NEW_PLAYER_STRENGTH": "new_player_strength",
+                   "ROLE_CHANGE_RETENTION": "role_change_retention", "SEASON_CARRY": "season_carry",
+                   "TRANSFER_SHRINK": "transfer_shrink", "TRANSFER_WIDEN": "transfer_widen"}
+
+
+def __getattr__(name):          # PEP 562: playerstate.SEASON_CARRY etc. read the active parameters
+    if name in _REGISTRY_NAMES:
+        return getattr(P.player, _REGISTRY_NAMES[name])
+    raise AttributeError(name)
+
 
 STATE_COLUMNS = ["pid", "team", "player", "group", "season", "week", "share_a", "share_b",
                  "share_mean", "share_sd", "eff_mean", "eff_prec", "eff_sd", "games",
@@ -97,23 +111,23 @@ def week_observations(box_week: pd.DataFrame) -> pd.DataFrame:
 
 def _new_row(pid, team, player, group, season, week, prev_final: pd.DataFrame | None):
     """Prior for a player with no state yet this season."""
-    ep = EFF_PRIOR[group]
-    a0 = NEW_PLAYER_SHARE * NEW_PLAYER_STRENGTH
-    b0 = (1 - NEW_PLAYER_SHARE) * NEW_PLAYER_STRENGTH
+    ep, Q = EFF_PRIOR[group], P.player
+    a0 = Q.new_player_share * Q.new_player_strength
+    b0 = (1 - Q.new_player_share) * Q.new_player_strength
     eff_mean, eff_prec, source = ep["mean"], 1.0 / ep["tau2"], "position"
     if prev_final is not None:
         hit = prev_final[(prev_final["pid"] == pid) & (prev_final["group"] == group)]
         if len(hit):
             h = hit.iloc[0]
             if h["team"] == team:                                    # same school: carry forward
-                a0, b0 = h["share_a"] * SEASON_CARRY, h["share_b"] * SEASON_CARRY
-                eff_mean, eff_prec = h["eff_mean"], h["eff_prec"] * SEASON_CARRY
+                a0, b0 = h["share_a"] * Q.season_carry, h["share_b"] * Q.season_carry
+                eff_mean, eff_prec = h["eff_mean"], h["eff_prec"] * Q.season_carry
                 source = "carried"
             else:                                                    # transfer: prior-school production
-                m = h["share_mean"] * (1 - TRANSFER_SHRINK) + NEW_PLAYER_SHARE * TRANSFER_SHRINK
-                a0, b0 = m * NEW_PLAYER_STRENGTH, (1 - m) * NEW_PLAYER_STRENGTH
-                eff_mean = h["eff_mean"] * (1 - TRANSFER_SHRINK) + ep["mean"] * TRANSFER_SHRINK
-                eff_prec = 1.0 / (ep["tau2"] * TRANSFER_WIDEN)
+                m = h["share_mean"] * (1 - Q.transfer_shrink) + Q.new_player_share * Q.transfer_shrink
+                a0, b0 = m * Q.new_player_strength, (1 - m) * Q.new_player_strength
+                eff_mean = h["eff_mean"] * (1 - Q.transfer_shrink) + ep["mean"] * Q.transfer_shrink
+                eff_prec = 1.0 / (ep["tau2"] * Q.transfer_widen)
                 source = "prior_school"
     return dict(pid=pid, team=team, player=player, group=group, season=season, week=week,
                 share_a=a0, share_b=b0, eff_mean=eff_mean, eff_prec=eff_prec, games=0, touches=0.0,
@@ -185,7 +199,7 @@ def update_player_state(prev: pd.DataFrame | None, box_week: pd.DataFrame, seaso
     # widen: forget part of the old evidence for players whose role changed
     rc = out["role_change"].to_numpy()
     for col in ("share_a", "share_b", "eff_prec"):
-        out.loc[rc, col] = out.loc[rc, col] * ROLE_CHANGE_RETENTION
+        out.loc[rc, col] = out.loc[rc, col] * P.player.role_change_retention
 
     out["share_mean"] = out["share_a"] / (out["share_a"] + out["share_b"])
     out["share_sd"] = [_share_sd(a, b) for a, b in zip(out["share_a"], out["share_b"])]

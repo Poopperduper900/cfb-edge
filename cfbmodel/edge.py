@@ -120,7 +120,7 @@ def edge_shrinkage(raw_edge: float, market_softness: float = 1.0, sample_conf: f
     Then a flat 0.75 on top, because the historical failure mode of every model
     in this repo's lineage is believing its own edges at face value.
     """
-    return float(raw_edge * market_softness * sample_conf * 0.75)
+    return float(raw_edge * market_softness * sample_conf * C.edge_flat_haircut)
 
 
 # ----------------------------------------------------------------- bet builder

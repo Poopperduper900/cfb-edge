@@ -31,6 +31,7 @@ import pandas as pd
 from . import (backtest, budget, edge, game_model, ingest, priors, props, qb,
                playerstate, ratings, schema, script, state, teams, validation, week0, weather)
 from .config import C, OUTPUT
+from .params import P
 from .keys import MissingKeyError
 
 
@@ -341,7 +342,7 @@ def cmd_props(args):
                 mk = "rush_yds"
             elif d["group"] == "rec" and float(r["rec"]) >= 6:
                 out = script.simulate_rec_yards_joint(
-                    float(d["share"]), sc, float(r["ypr"]) * 0.635, 0.635, sigma,
+                    float(d["share"]), sc, float(r["ypr"]) * P.props.catch_rate_mean, P.props.catch_rate_mean, sigma,
                     p_play=args.p_play, share_pull_sensitivity=0.7 * sens)
                 sim, mk = out["yards"], "rec_yds"
             else:

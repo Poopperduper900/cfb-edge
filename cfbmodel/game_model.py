@@ -14,7 +14,9 @@ import numpy as np
 import pandas as pd
 from scipy import stats
 
-from .config import ALTITUDE_TEAMS, C, SOFT_MARKET_TAGS
+from . import weather as _weather
+from .config import ALTITUDE_TEAMS, C
+from .params import P
 
 
 # --------------------------------------------------------------- point spread
@@ -57,17 +59,19 @@ def project_game(
 
     # rest. CFB rest edges are real but small and mostly matter at the extremes
     # (a bye vs a Thursday-to-Saturday turnaround), not 6 days vs 7.
+    G = P.game
     if rest_days_home is not None and rest_days_away is not None:
-        d = np.clip(rest_days_home - rest_days_away, -9, 9)
-        adj["rest"] = 0.09 * d
+        d = np.clip(rest_days_home - rest_days_away, -G.rest_clip_days, G.rest_clip_days)
+        adj["rest"] = G.rest_per_day * d
 
     # travel + altitude. Altitude is a fourth-quarter effect, so it hits the
     # *total* and the tail of the margin more than the mean.
-    if travel_miles > 1200:
-        adj["travel"] = -0.35 * min((travel_miles - 1200) / 1000, 2.0)
+    if travel_miles > G.travel_threshold_miles:
+        extra = (travel_miles - G.travel_threshold_miles) / 1000
+        adj["travel"] = -G.travel_per_1000_miles * min(extra, G.travel_cap_units)
     alt = ALTITUDE_TEAMS.get(home, 0)
-    if alt >= 4000 and not neutral:
-        adj["altitude"] = 0.8 if alt >= 6000 else 0.45
+    if alt >= G.altitude_min_ft and not neutral:
+        adj["altitude"] = G.altitude_margin_high if alt >= G.altitude_high_ft else G.altitude_margin_low
 
     # QB availability. The single biggest CFB-specific line mover: no injury
     # report means this information is often *not* in the number yet.
@@ -86,20 +90,19 @@ def project_game(
     else:
         pace = float(ratings.get("pace", pd.Series(C.pace_mean, index=ratings.index)).loc[home])
         pace2 = float(ratings.get("pace", pd.Series(C.pace_mean, index=ratings.index)).loc[away])
-        total = 52.0 + 0.25 * ((pace + pace2) - 2 * C.pace_mean)
+        total = G.total_base + G.pace_total_slope * ((pace + pace2) - 2 * C.pace_mean)
 
     tot_adj = {}
-    if not dome:
-        if wind_mph > 12:
-            tot_adj["wind"] = -0.42 * (wind_mph - 12)   # steep and real
-        if precip:
-            tot_adj["precip"] = -1.1
-        if temp_f is not None and temp_f < 32:
-            tot_adj["cold"] = -0.05 * (32 - temp_f)
-    if alt >= 4000:
-        tot_adj["altitude"] = 1.4
+    # weather uses the one set of coefficients in weather.total_adjustment (a dome zeroes it)
+    wx_pts, _ = _weather.total_adjustment({
+        "dome": dome, "wind_mph": wind_mph, "gust_mph": wind_mph, "temp_f": temp_f,
+        "precip_in": G.precip_inches_when_flagged if precip else 0.0, "wx_confidence": 1.0})
+    if wx_pts:
+        tot_adj["weather"] = wx_pts
+    if alt >= G.altitude_min_ft:
+        tot_adj["altitude"] = G.altitude_total
     if home_qb_out or away_qb_out:
-        tot_adj["qb"] = -1.5
+        tot_adj["qb"] = -G.qb_out_total
     total = total + sum(tot_adj.values())
 
     return {
@@ -123,7 +126,9 @@ def qb_dropoff(team: str, ratings: pd.DataFrame) -> float:
     it with a real QB rating the moment you have one.
     """
     r = float(ratings.loc[team, "rating"])
-    return float(np.clip(3.2 + 0.18 * max(r, 0), 3.0, 11.0))
+    G = P.game
+    return float(np.clip(G.qb_dropoff_base + G.qb_dropoff_per_rating * max(r, 0),
+                         G.qb_dropoff_min, G.qb_dropoff_max))
 
 
 # -------------------------------------------------- discrete margin distribution
@@ -150,9 +155,10 @@ def margin_pmf(
     closing line, which inflates every cover probability you compute against it.
     """
     xs = np.arange(lo, hi + 1)
-    base = C.margin_scale_market if source == "market" else C.margin_scale_model
-    sd = base + C.margin_sd_total_coef * (exp_total - 52.0)
-    sd = float(np.clip(sd, 8.0, 20.0))
+    M = P.margin
+    base = M.scale_market if source == "market" else M.scale_model
+    sd = base + M.sd_total_coef * (exp_total - M.sd_total_ref)
+    sd = float(np.clip(sd, M.sd_floor, M.sd_cap))
 
     z_hi = (xs + 0.5 - exp_margin) / sd
     z_lo = (xs - 0.5 - exp_margin) / sd
@@ -195,9 +201,9 @@ def total_probs(exp_total: float, line: float, exp_margin: float = 0.0, source: 
     time, and garbage time is a coin flip between kneel-downs and a backup
     throwing it 40 times.
     """
-    sd = C.total_sd_base + 0.06 * abs(exp_margin)
+    sd = P.totals.sd_base + P.totals.sd_margin_coef * abs(exp_margin)
     if source == "model":
-        sd *= C.total_sd_model_mult       # our own total is less accurate than the market's
+        sd *= P.totals.sd_model_mult       # our own total is less accurate than the market's
     elif source != "market":
         raise ValueError(f"source must be 'market' or 'model', not {source!r}")
     pts = np.arange(0, 140)
@@ -223,7 +229,7 @@ def fcs_adjustment(fbs_rating: float) -> float:
     second half). Included so the pipeline does not crash, not because you
     should bet them.
     """
-    return fbs_rating + 24.0
+    return fbs_rating + P.game.fcs_rating_adjust
 
 
 def market_softness(row: pd.Series) -> float:
@@ -234,14 +240,14 @@ def market_softness(row: pd.Series) -> float:
     already contains everything you know and a lot you do not.
     """
     if row.get("week", 99) <= 1:
-        return SOFT_MARKET_TAGS["week0_week1"]
+        return P.softness.week0_week1
     p4 = {"SEC", "Big Ten", "Big 12", "ACC"}
     hc, ac = row.get("home_conf"), row.get("away_conf")
     if hc in p4 and ac in p4:
-        return SOFT_MARKET_TAGS["p4_marquee"]
+        return P.softness.p4_marquee
     if hc not in p4 and ac not in p4:
         day = row.get("day_of_week", "Sat")
         if day not in ("Sat", "Saturday"):
-            return SOFT_MARKET_TAGS["weeknight_midmajor"]
-        return SOFT_MARKET_TAGS["g5_vs_g5"]
-    return 0.5
+            return P.softness.weeknight_midmajor
+        return P.softness.g5_vs_g5
+    return P.softness.mixed

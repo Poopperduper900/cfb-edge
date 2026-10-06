@@ -34,6 +34,7 @@ import pandas as pd
 
 from .config import C
 from .game_model import margin_pmf
+from .params import P
 from .ratings import as_of
 
 RNG = np.random.default_rng(20260829)
@@ -43,7 +44,7 @@ RNG = np.random.default_rng(20260829)
 
 
 def shrink_share(
-    observed_share: float, n_team_plays: int, prior_share: float, prior_strength: float = 55.0
+    observed_share: float, n_team_plays: int, prior_share: float, prior_strength: float | None = None
 ) -> float:
     """
     Beta-binomial posterior mean for a usage share.
@@ -53,19 +54,23 @@ def shrink_share(
     saw. With CFB's box-score-only usage data, being aggressive here is a
     mistake; a 3-game sample is not a role.
     """
+    if prior_strength is None:
+        prior_strength = P.props.share_prior_strength
     a = prior_share * prior_strength + observed_share * n_team_plays
     b = (1 - prior_share) * prior_strength + (1 - observed_share) * n_team_plays
     return float(a / (a + b))
 
 
 def empirical_bayes_rate(
-    player_total: float, player_events: float, pos_mean: float, pos_var: float, min_events: float = 12.0
+    player_total: float, player_events: float, pos_mean: float, pos_var: float, min_events: float | None = None
 ) -> float:
     """
     Shrink a per-touch efficiency rate (ypc, yards/target, ypa) toward the
     positional mean. Weight = n / (n + k) with k derived from the ratio of
     within-player noise to between-player spread.
     """
+    if min_events is None:
+        min_events = P.props.eb_min_events
     if player_events < 1:
         return pos_mean
     obs = player_total / player_events
@@ -75,13 +80,23 @@ def empirical_bayes_rate(
     return float(w * obs + (1 - w) * pos_mean)
 
 
-POS_PRIORS = {
-    # (mean per-touch, between-player variance, per-touch sd) from FBS 2015-2025
-    "rush_ypc": (4.72, 0.55, 6.4),
-    "rec_ypt": (7.95, 1.85, 9.1),   # yards per *target*
-    "pass_ypa": (7.45, 0.95, 9.6),
-    "catch_rate": (0.635, 0.010, 0.0),
-}
+class _PosPriors:
+    """(mean per touch, between-player variance, per-touch sd) from the registry, by stat."""
+
+    def __getitem__(self, name: str):
+        g = P.props
+        if name == "rush_ypc":
+            return (g.rush_ypc_mean, g.rush_ypc_var, g.rush_ypc_sd)
+        if name == "rec_ypt":
+            return (g.rec_ypt_mean, g.rec_ypt_var, g.rec_ypt_sd)
+        if name == "pass_ypa":
+            return (g.pass_ypa_mean, g.pass_ypa_var, g.pass_ypa_sd)
+        if name == "catch_rate":
+            return (g.catch_rate_mean, g.catch_rate_var, 0.0)
+        raise KeyError(name)
+
+
+POS_PRIORS = _PosPriors()
 
 
 # -------------------------------------------------------------- game script
@@ -90,12 +105,12 @@ POS_PRIORS = {
 def team_play_estimate(pace_home: float, pace_away: float, exp_total: float) -> tuple[float, float]:
     """Team plays scale with both teams' pace and with scoring environment."""
     base = 0.5 * (pace_home + pace_away)
-    scale = 1.0 + 0.004 * (exp_total - 52.0)
+    scale = 1.0 + P.props.play_pace_total_slope * (exp_total - P.script.play_total_ref)
     return base * scale, base * scale
 
 
 def pass_rate_over_expectation(exp_margin_for_team: float, base_pass_rate: float,
-                               lead_factor: float = 0.45) -> float:
+                               lead_factor: float | None = None) -> float:
     """
     Trailing teams throw; leading teams run. Effect is steeper in CFB than the NFL because
     leads are larger and clock-killing starts earlier.
@@ -105,8 +120,9 @@ def pass_rate_over_expectation(exp_margin_for_team: float, base_pass_rate: float
     45% of the final margin (`lead_factor`; script.simulate_game_script uses the same number).
     Using the final margin makes big favourites' RBs project above their neutral baseline.
     """
-    delta = -0.0095 * lead_factor * exp_margin_for_team
-    return float(np.clip(base_pass_rate + delta, 0.22, 0.78))
+    lead_factor = P.script.lead_factor if lead_factor is None else lead_factor
+    delta = -P.script.proe_slope * lead_factor * exp_margin_for_team
+    return float(np.clip(base_pass_rate + delta, P.props.pass_rate_lo, P.props.pass_rate_hi))
 
 
 def pull_hazard(exp_margin_for_team: float, exp_total: float, is_starter: bool = True) -> float:
@@ -122,9 +138,10 @@ def pull_hazard(exp_margin_for_team: float, exp_total: float, is_starter: bool =
     if not is_starter:
         return 0.0
     xs, pmf = margin_pmf(exp_margin_for_team, exp_total)
-    blowout = float(pmf[np.abs(xs) >= 25].sum())
-    near = float(pmf[(np.abs(xs) >= 17) & (np.abs(xs) < 25)].sum())
-    return float(np.clip(0.30 * blowout + 0.10 * near, 0.0, 0.35))
+    Q = P.props
+    blowout = float(pmf[np.abs(xs) >= Q.pull_blowout_margin].sum())
+    near = float(pmf[(np.abs(xs) >= Q.pull_near_margin) & (np.abs(xs) < Q.pull_blowout_margin)].sum())
+    return float(np.clip(Q.pull_blowout_weight * blowout + Q.pull_near_weight * near, 0.0, Q.pull_max))
 
 
 # ------------------------------------------------------------- prop simulation
@@ -150,7 +167,7 @@ def simulate_rush_yards(
     exp_total: float,
     p_play: float = 1.0,
     n_sims: int = 40_000,
-    volume_shock_sd: float = 0.21,
+    volume_shock_sd: float | None = None,
 ) -> np.ndarray:
     """
     Two-stage simulation with an explicit volume shock.
@@ -161,6 +178,8 @@ def simulate_rush_yards(
     uncertain input. In CFB — no snap data, no injury report, live committee
     backfields — that uncertainty is larger, hence a wider default sd.
     """
+    if volume_shock_sd is None:
+        volume_shock_sd = P.props.volume_shock_rush
     rush_plays = team_plays * team_rush_rate
     mu_carries = rush_plays * carry_share
     mu_carries *= 1.0 - pull_hazard(exp_margin_for_team, exp_total)
@@ -176,10 +195,11 @@ def simulate_rush_yards(
     # plain gamma cannot produce) plus an explicit breakaway component. Both are
     # mean-compensated so the realised distribution centres on the ypc you asked
     # for — otherwise every projection silently runs ~0.5 yards/carry light.
-    p_break, break_shape, break_scale = 0.021, 3.0, 12.0
-    shift = 1.2
+    S = P.script
+    p_break, break_shape, break_scale = S.p_break, S.break_shape, S.break_scale
+    shift = S.carry_shift
     base_mean = ypc + shift - p_break * break_shape * break_scale
-    base_mean = max(base_mean, 0.4)
+    base_mean = max(base_mean, S.carry_min_mean)
     shape = max((base_mean / max(ypc_sd, 1e-3)) ** 2, 0.05)
     scale = max(base_mean / shape, 1e-3)
 
@@ -207,12 +227,14 @@ def simulate_rec_yards(
     exp_total: float,
     p_play: float = 1.0,
     n_sims: int = 40_000,
-    volume_shock_sd: float = 0.26,
+    volume_shock_sd: float | None = None,
 ) -> dict:
     """Returns receptions and receiving yards distributions."""
+    if volume_shock_sd is None:
+        volume_shock_sd = P.props.volume_shock_rec
     pass_plays = team_plays * team_pass_rate
     mu_targets = pass_plays * target_share
-    mu_targets *= 1.0 - 0.7 * pull_hazard(exp_margin_for_team, exp_total)
+    mu_targets *= 1.0 - P.props.rec_pull_weight * pull_hazard(exp_margin_for_team, exp_total)
 
     shock = RNG.lognormal(mean=-0.5 * volume_shock_sd**2, sigma=volume_shock_sd, size=n_sims)
     tgts = RNG.poisson(np.clip(mu_targets * shock, 0.05, None))
@@ -221,7 +243,7 @@ def simulate_rec_yards(
     recs = RNG.binomial(tgts, catch_rate)
 
     ypr = ypt / max(catch_rate, 1e-3)
-    sd_ypr = 0.95 * ypr
+    sd_ypr = P.script.rec_yards_cv * ypr
     sigma = np.sqrt(np.log1p((sd_ypr / ypr) ** 2))
     mu = np.log(ypr) - 0.5 * sigma**2
 
@@ -241,16 +263,18 @@ def simulate_pass_yards(
     exp_total: float,
     p_play: float = 1.0,
     n_sims: int = 40_000,
-    volume_shock_sd: float = 0.16,
+    volume_shock_sd: float | None = None,
 ) -> np.ndarray:
-    mu_att = attempts * (1.0 - 0.85 * pull_hazard(exp_margin_for_team, exp_total))
+    if volume_shock_sd is None:
+        volume_shock_sd = P.props.volume_shock_pass
+    mu_att = attempts * (1.0 - P.props.pass_pull_weight * pull_hazard(exp_margin_for_team, exp_total))
     shock = RNG.lognormal(mean=-0.5 * volume_shock_sd**2, sigma=volume_shock_sd, size=n_sims)
     att = RNG.poisson(np.clip(mu_att * shock, 0.5, None))
     att = np.where(RNG.random(n_sims) < p_play, att, 0)
 
     sd_play = POS_PRIORS["pass_ypa"][2]
     yards = RNG.normal(ypa * att, sd_play * np.sqrt(np.maximum(att, 1)))
-    return np.maximum(yards, -20.0)
+    return np.maximum(yards, P.props.min_pass_yards)
 
 
 # ------------------------------------------------------------------ pricing
@@ -303,6 +327,6 @@ def build_player_priors(box: pd.DataFrame, asof_season: int, asof_week: int) -> 
     ]
     m2, v2, _ = POS_PRIORS["rec_ypt"]
     out["ypr"] = [
-        empirical_bayes_rate(y, r, m2 / 0.635, v2) for y, r in zip(out["rec_yds"], out["rec"])
+        empirical_bayes_rate(y, r, m2 / P.props.catch_rate_mean, v2) for y, r in zip(out["rec_yds"], out["rec"])
     ]
     return out.fillna(0.0)

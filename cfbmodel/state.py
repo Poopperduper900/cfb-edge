@@ -17,7 +17,7 @@ The blended rating a game is priced with:
     rating       = w_model * model_shrunk + (1 - w_model) * market
 
 w_model comes from output/validation_status.json (0 if absent). `half_life` of the decay is an
-unfitted default until Phase 6 fits it.
+a registry parameter (state.decay_half_life) that `learn` re-fits.
 """
 from __future__ import annotations
 
@@ -28,20 +28,20 @@ import pandas as pd
 
 from . import config, playerstate, priors, ratings, status
 from .config import C
-
-EARLY_SEASON_LAST_WEEK = 5
-DEFAULT_DECAY_HALF_LIFE = 2.0   # UNFITTED starting value; Phase 6 learns this from data
+from .params import P
 
 
 def state_dir() -> Path:
     return config.OUTPUT / "state"
 
 
-def early_season_prior_weight(week: int, half_life: float = DEFAULT_DECAY_HALF_LIFE,
-                              last_week: int = EARLY_SEASON_LAST_WEEK) -> float:
+def early_season_prior_weight(week: int, half_life: float | None = None,
+                              last_week: int | None = None) -> float:
     """Weight on the preseason prior when week `week` of games is about to be played (so `week`
     weeks of results are in). 1.0 before any games, halving every `half_life` weeks, 0 after
     week `last_week`."""
+    half_life = P.state.decay_half_life if half_life is None else half_life
+    last_week = P.state.early_last_week if last_week is None else last_week
     if week > last_week:
         return 0.0
     return float(0.5 ** (week / half_life))
@@ -52,7 +52,7 @@ def early_season_prior_weight(week: int, half_life: float = DEFAULT_DECAY_HALF_L
 
 def build_team_state(season: int, week_completed: int, lines: pd.DataFrame, pbp: pd.DataFrame,
                      prior_pts: pd.Series | None = None, w_model: float | None = None,
-                     half_life: float = DEFAULT_DECAY_HALF_LIFE) -> pd.DataFrame:
+                     half_life: float | None = None) -> pd.DataFrame:
     """Team ratings after `week_completed`, using only games strictly before the next week."""
     asof_week = week_completed + 1
     epa = ratings.fit_epa_ratings(pbp, season, asof_week, split_pass_rush=False)

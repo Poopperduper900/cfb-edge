@@ -29,6 +29,7 @@ from sklearn.linear_model import Ridge
 
 from . import status
 from .config import C
+from .params import P
 
 
 class NoDataBeforeAsOf(ValueError):
@@ -231,8 +232,8 @@ def _pace(df: pd.DataFrame) -> pd.Series:
 
 
 def fit_market_ratings(
-    lines_df: pd.DataFrame, asof_season: int, asof_week: int, half_life_weeks: float = 5.0,
-    alpha: float = 1.0,
+    lines_df: pd.DataFrame, asof_season: int, asof_week: int, half_life_weeks: float | None = None,
+    alpha: float | None = None,
 ) -> pd.DataFrame:
     """
     Least-squares power ratings from closing spreads:
@@ -244,6 +245,8 @@ def fit_market_ratings(
     the way the market would. That is the actual engine of early-week edge:
     you are not beating the closer, you are beating the number before it forms.
     """
+    half_life_weeks = P.ratings.market_half_life_weeks if half_life_weeks is None else half_life_weeks
+    alpha = P.ratings.market_alpha if alpha is None else alpha
     df = drop_non_fbs(lines_df.dropna(subset=["spread_close"])).copy()
     df = as_of(df, asof_season, asof_week)
     df = df.groupby(["gameId", "home", "away", "season", "week"], as_index=False)[
@@ -293,7 +296,7 @@ def fit_total_ratings(lines_df: pd.DataFrame, asof_season: int, asof_week: int) 
     X[np.arange(n), df["home"].map(idx)] = 1.0
     X[np.arange(n), df["away"].map(idx)] = 1.0
     y = df["total_close"].to_numpy()
-    m = Ridge(alpha=2.0, fit_intercept=True)
+    m = Ridge(alpha=P.ratings.total_alpha, fit_intercept=True)
     m.fit(X, y)
     return pd.DataFrame({"total_rating": m.coef_}, index=teams)
 

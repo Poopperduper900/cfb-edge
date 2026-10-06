@@ -25,7 +25,7 @@ Status key: **HANDLED** = correct in code · **PARTIAL** = some of it · **NOT H
 | 9 | `cfbd` lib v5 auth sends no header | **HANDLED** | `ingest.cfbd_get` uses `requests` with `Authorization: Bearer` (`ingest.py:56`); the `cfbd` library is not used. Gap: a 401 surfaces as a raw `HTTPError` traceback, and `cli.cmd_pull` swallows errors (bug C). | none (Phase 1 401 test) |
 | 10 | Weather: forecasts not reanalysis, shrink, domes = 0 | **PARTIAL** | Handled: dome → 0 in `weather.total_adjustment` (`weather.py:192`) and `attach_weather` (`:147`); horizon shrink in `forecast_confidence` (`:165`); `mode="forecast"` uses the historical-forecast API (`:88`). **Not handled:** coefficients are hand-set, never fitted on historical forecasts (a second, different set lives in `game_model.project_game`); for past games `hours_ahead` is negative so confidence is always 1.0, i.e. backtests ignore the horizon; ~~the dome list is a hand-typed exact-name match~~ (*fixed in Phase 2*: `attach_weather` uses CFBD's venue `dome` flag and falls back to the name list only when the flag is blank, recording `dome_source`; `project_game` takes `dome=`); ~~the weather cache never hits~~ (bug D, fixed). Still open: coefficients are not fitted (Phase 6) and the backtest horizon. | `test_upgrades::test_5` (shrink), `test_dome_zero` |
 | 11 | Cache path configurable | **HANDLED** | `config.py:22` `CFBMODEL_CACHE` (and `CFBMODEL_OUTPUT`, `:23`). Caveat: bug D means the weather cache is not durable even when pointed at Drive. | none |
-| 12 | `calibrate.py` claim is false | **NOT HANDLED** | `config.py:37` and `:71` still say `calibrate.py` re-fits constants. No such file; every constant is hand-set. Phase 6 replaces this and has an acceptance line for it. | none |
+| 12 | `calibrate.py` claim is false | **HANDLED in Phase 6a** | Was: `config.py:37` and `:71` still say `calibrate.py` re-fits constants. No such file; every constant was hand-set. *Fix:* constants are now versioned registry parameters and the claim is gone from config.py. | `test_config_no_longer_claims_a_calibrate_py_that_does_not_exist` |
 
 ## Other bugs found
 
@@ -63,12 +63,12 @@ a rate limit or a typo in the season looks like "no data" instead of an error. *
 which is randomised per process (measured: two runs, two different values). Every run re-calls Open-Meteo.
 *Fix:* `weather._cache_key` uses `hashlib`; a test pins the exact file name.
 
-**E. LOW: duplicated, hard-coded adjustments.** `game_model.project_game` carries its own wind/precip/cold/
+**E. LOW, FIXED in Phase 6a: duplicated, hard-coded adjustments.** `game_model.project_game` carries its own wind/precip/cold/
 altitude/rest/travel numbers (e.g. wind −0.42/mph over 12) that disagree with `weather.total_adjustment`
 (−0.34/mph over 10). Today `project_game`'s weather arguments are never passed, so there is no double count,
-but one call would create it. All of these move to the params file in Phase 6a.
+but one call would create it. *Fix:* `project_game` now uses `weather.total_adjustment`, and every one of these numbers is a registry parameter (params/v0001.json); `tests/test_params.py` fails if a tunable literal reappears in model code.
 
-**F. LOW: misleading config names.** `ridge_alpha_def` is used for the pass/rush sub-fits
+**F. LOW (open): misleading config names.** `ridge_alpha_def` is used for the pass/rush sub-fits
 (`ratings.py:168`), not for defense; `ridge_alpha_off` drives the main joint fit (`:127`).
 
 **G. LOW: the Power-4 conference list is hard-coded in several places** (`cli.cmd_validate`, `week0.P4`,
