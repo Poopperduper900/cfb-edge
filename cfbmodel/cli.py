@@ -30,7 +30,7 @@ import pandas as pd
 
 from . import board as board_mod
 from . import (backtest, budget, edge, game_model, ingest, learn, params, priors, props, qb,
-               playerstate, ratings, schema, script, state, status, teams, tracking, validation, week0, weather)
+               playerstate, propsboard, ratings, schema, script, state, status, teams, tracking, validation, week0, weather)
 from .config import C, OUTPUT
 from .params import P
 from .keys import MissingKeyError
@@ -286,6 +286,42 @@ def cmd_clv(args):
     print(f"wrote {OUTPUT / 'bets_settled.csv'}\nwrote {OUTPUT / 'clv_report.md'}")
 
 
+def cmd_props_board(args):
+    """Price the prop lines YOU typed into props_lines.csv. BET stays locked until a backtest on your
+    logged lines shows positive CLV (see propsboard.py)."""
+    s, w = args.season, args.week
+    ingest.set_current(week=w)
+    history = propsboard.load_lines(Path(args.lines) if args.lines else None)
+    latest = propsboard.latest_lines(history)
+    games_all = ingest.games(s)
+    wk = games_all[games_all["week"] == w]
+    if "season_type" in wk.columns:
+        wk = wk[wk["season_type"] == "regular"]
+    ps = state.read_player_state(s, w - 1)
+    if ps is None:
+        print(f"no saved player state for week {w - 1}; building it from box scores (run `update` to save it).")
+        box = pd.concat([ingest.player_box(s, x) for x in range(0, w)], ignore_index=True)
+        prev_last = state.last_week_with_players(s - 1)
+        ps = playerstate.build_player_state(box, s, w - 1, state.read_player_state(s - 1, prev_last) if prev_last is not None else None)
+    cons = board_mod._consensus(ingest.lines(s).query("week == @w")) if len(wk) else pd.DataFrame()
+    pace = None
+    try:
+        pace = state.read_team_state(s, w - 1)["pace"]
+    except FileNotFoundError:
+        print("note: no saved team state, so every team gets the league-average pace.")
+    log_p = propsboard.log_path()
+    log = pd.read_csv(log_p) if log_p.exists() else pd.DataFrame()
+    ok, why, _ = propsboard.eligibility(log, history)
+    b = propsboard.build_props_board(latest, ps, wk, cons, pace, week=w, eligible=ok, params_version=params.active_version())
+    out = OUTPUT / f"props_board_{s}_w{w}.csv"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    b.to_csv(out, index=False, float_format="%.4f")
+    n = propsboard.log_recommendations(b)
+    print(b[["player", "market", "side", "line", "p_play", "proj_mean", "p_over", "ev", "status", "flags"]].head(25).to_string(index=False))
+    print(f"\n{why}\n{b['status'].value_counts().to_dict()}   wrote {out}   logged {n} model-liked sides to {log_p}")
+    print("Remember: CFB has no injury report. p_play is YOUR number; blank means 1.0 and is flagged.")
+
+
 def cmd_models(args):
     t = learn.models_table()
     print(t.to_string(index=False))
@@ -477,17 +513,17 @@ def cmd_props(args):
             mates = depth[depth["group"] == d["group"]]["share"].to_numpy()
             sigma = script.role_instability(hist, mates, own_share=float(d["share"]))
             # starters lose volume in blowouts; backups gain it
-            sens = 1.0 if d["rank"] == 1 else (-1.2 if d["rank"] >= 2 else 0.5)
+            sens = P.script.starter_pull_sensitivity if d["rank"] == 1 else P.script.backup_pull_sensitivity
 
             if d["group"] == "rush" and float(r["carries"]) >= 10:
                 sim = script.simulate_rush_yards_joint(
-                    float(d["share"]), sc, float(r["ypc"]), 6.4, sigma,
+                    float(d["share"]), sc, float(r["ypc"]), P.props.rush_ypc_sd, sigma,
                     p_play=args.p_play, share_pull_sensitivity=sens)
                 mk = "rush_yds"
             elif d["group"] == "rec" and float(r["rec"]) >= 6:
                 out = script.simulate_rec_yards_joint(
                     float(d["share"]), sc, float(r["ypr"]) * P.props.catch_rate_mean, P.props.catch_rate_mean, sigma,
-                    p_play=args.p_play, share_pull_sensitivity=0.7 * sens)
+                    p_play=args.p_play, share_pull_sensitivity=P.script.rec_pull_sensitivity * sens)
                 sim, mk = out["yards"], "rec_yds"
             else:
                 continue
@@ -619,6 +655,12 @@ def main(argv=None):
     p = sub.add_parser("clv", parents=[net], help="closing line value, results and ROI of your logged bets")
     p.set_defaults(func=cmd_clv)
 
+    p = sub.add_parser("props-board", parents=[net], help="price the prop lines you typed into props_lines.csv")
+    p.add_argument("--season", type=int, required=True)
+    p.add_argument("--week", type=int, required=True)
+    p.add_argument("--lines", default=None, help="path to your props lines CSV (default: output/props_lines.csv)")
+    p.set_defaults(func=cmd_props_board)
+
     p = sub.add_parser("models", help="list parameter versions")
     p.set_defaults(func=cmd_models)
 
@@ -683,7 +725,7 @@ def main(argv=None):
     try:
         return args.func(args) or 0
     except (ingest.CfbdError, budget.BudgetExceeded, schema.SchemaError, learn.LearnError,
-            params.ParamsError, tracking.TrackingError) as e:
+            params.ParamsError, tracking.TrackingError, propsboard.PropsError) as e:
         print(f"\n{type(e).__name__}: {e}", file=sys.stderr)
         return 2
     except MissingKeyError as e:

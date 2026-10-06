@@ -139,7 +139,9 @@
     "role_secure_share": 0.65,
     "role_min_sigma": 0.1,
     "role_max_sigma": 0.6,
-    "depth_lookback_weeks": 4
+    "depth_lookback_weeks": 4,
+    "starter_pull_sensitivity": 1.0,
+    "backup_pull_sensitivity": -1.2
   },
   "props": {
     "share_prior_strength": 55.0,
@@ -168,7 +170,13 @@
     "volume_shock_pass": 0.16,
     "rec_pull_weight": 0.7,
     "pass_pull_weight": 0.85,
-    "min_pass_yards": -20.0
+    "min_pass_yards": -20.0,
+    "min_rush_touches": 10,
+    "min_rec_touches": 6,
+    "softness": 0.8,
+    "backtest_min_n": 100,
+    "board_sims": 10000,
+    "default_p_play": 1.0
   },
   "player": {
     "new_player_share": 0.1,

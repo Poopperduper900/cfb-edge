@@ -67,6 +67,7 @@ python -m cfbmodel postmortem --season 2026 --week N
 python -m cfbmodel board --season 2026 --week N
 python -m cfbmodel log-bet --season 2026 --week N --game "Away @ Home" --market spread --side home --line -6.5 --price -110 --book MyBook --stake 1
 python -m cfbmodel clv                              # closing line value, results, ROI of your logged bets
+python -m cfbmodel props-board --season 2026 --week N   # prices the lines YOU typed into output/props_lines.csv (BET stays locked until CLV backtest passes)
 streamlit run app/dashboard.py        # Phase 10
 ```
 
