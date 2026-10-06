@@ -148,6 +148,7 @@ def build_board(season: int, week: int, games: pd.DataFrame, lines: pd.DataFrame
     ts      team state (state.build_team_state with w_model=1): model_rating_shrunk per team
     """
     now = now or datetime.now(timezone.utc)
+    games = games.reset_index(drop=True)      # row number == label, and we iterate over plain dicts (pitfall 5)
     B, G = P.board, P.game
     cons = _consensus(lines) if len(lines) else pd.DataFrame(columns=["spread_close", "spread_open", "total_close",
                                                                       "total_open", "ml_home", "ml_away"])
@@ -163,7 +164,7 @@ def build_board(season: int, week: int, games: pd.DataFrame, lines: pd.DataFrame
     masks = {m: validation.segment_masks(seg_df, m) for m in ("spread_vs_open", "spread_vs_close",
                                                               "total_vs_open", "total_vs_close")}
 
-    for gi, g in games.iterrows():
+    for gi, g in enumerate(games.to_dict("records")):
         gid, h, a = g["id"], g["homeTeam"], g["awayTeam"]
         neutral = bool(g.get("neutralSite", False))
         fbs_both = bool(g.get("home_is_fbs", True)) and bool(g.get("away_is_fbs", True))
@@ -191,9 +192,9 @@ def build_board(season: int, week: int, games: pd.DataFrame, lines: pd.DataFrame
         else:
             model_margin = -(rate(a) + G.fcs_rating_adjust) + hfa
         wx_adj = 0.0
-        if "wx_status" in g.index:
+        if "wx_status" in g:
             wx_adj, _ = weather.total_adjustment({k: g.get(k) for k in ("dome", "wind_mph", "gust_mph", "precip_in",
-                                                                         "temp_f", "wx_confidence") if k in g.index})
+                                                                         "temp_f", "wx_confidence") if k in g})
         if total_ratings is not None and h in total_ratings.index and a in total_ratings.index:
             model_total = float(total_ratings.loc[h, "total_rating"] + total_ratings.loc[a, "total_rating"]) + wx_adj
         else:
