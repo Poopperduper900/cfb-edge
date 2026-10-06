@@ -28,6 +28,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from . import board as board_mod
 from . import (backtest, budget, edge, game_model, ingest, learn, params, priors, props, qb,
                playerstate, ratings, schema, script, state, status, teams, validation, week0, weather)
 from .config import C, OUTPUT
@@ -214,6 +215,46 @@ def cmd_learn(args):
     print(f"drift check: {'ALARM, model weight forced to 0: ' if drift['active'] else 'ok. '}{drift['reason']}")
     path = learn.write_postmortem(learn.postmortem(res, s, w), s, w)
     print(f"wrote {path}")
+
+
+def cmd_board(args):
+    """The weekly product: every game priced, honest statuses, one CSV and one phone-friendly page."""
+    s, w = args.season, args.week
+    ingest.set_current(week=w)
+    games_all = ingest.games(s)
+    wk = games_all[games_all["week"] == w]
+    if "season_type" in wk.columns:
+        wk = wk[wk["season_type"] == "regular"]
+    if wk.empty:
+        print(f"no games found for season {s} week {w}")
+        return 1
+    g, ln, pbp = _load([x for x in (s - 2, s - 1, s) if x >= 2015])
+    allp = pd.concat(pbp.values(), ignore_index=True)
+    rec = {y: ingest.recruiting_teams(y) for y in range(s - 3, s + 1)}
+    prior = state.preseason_prior_points(s, ln, rec, ingest.returning_production(s), _portal_or_empty(s))
+    ts = state.build_team_state(s, w - 1, ln, allp, prior_pts=prior, w_model=1.0)      # the model's own view
+    tot = ratings.fit_total_ratings(ln, s, w)
+
+    wk_games = wk.reset_index(drop=True)
+    if not args.no_weather:
+        wk_games = weather.attach_weather(wk_games, ingest.venues(), mode="forecast")
+    qb_table = None
+    if "passer" in allp.columns:
+        qb_table = qb.build_qb_table(allp, s, w)
+    else:
+        print("note: plays have no 'passer' column, so QB-uncertainty flags are unavailable.")
+
+    wk_lines = ln[(ln["season"] == s) & (ln["week"] == w)]
+    b = board_mod.build_board(
+        s, w, wk_games, wk_lines, ts, tot, validation_status=status.read_validation(),
+        drift_active=status.drift_active(), params_version=params.active_version(), qb_table=qb_table,
+        validation_age_days=status.validation_age_days(), prior_source=prior.attrs.get("weights_source"))
+    csv_path, html_path = OUTPUT / f"board_{s}_w{w}.csv", OUTPUT / f"board_{s}_w{w}.html"
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    csv_path.write_text(board_mod.to_csv(b))
+    html_path.write_text(board_mod.to_html(b), encoding="utf-8")
+    print(board_mod.summary(b))
+    print(f"\nwrote {csv_path}\nwrote {html_path}   (open it in a browser, or send it to your phone)")
 
 
 def cmd_models(args):
@@ -525,6 +566,12 @@ def main(argv=None):
     p.add_argument("--full", action="store_true", help="season-end run: also judge the early-season decay")
     p.add_argument("--even-if-not-due", action="store_true", help="run even if it is not due yet")
     p.set_defaults(func=cmd_learn)
+
+    p = sub.add_parser("board", parents=[net], help="price a week: the edge board (CSV + HTML)")
+    p.add_argument("--season", type=int, required=True)
+    p.add_argument("--week", type=int, required=True, help="the week about to be played")
+    p.add_argument("--no-weather", action="store_true")
+    p.set_defaults(func=cmd_board)
 
     p = sub.add_parser("models", help="list parameter versions")
     p.set_defaults(func=cmd_models)

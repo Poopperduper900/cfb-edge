@@ -274,5 +274,17 @@
     "mae_ratio_increase": 0.2,
     "cal_error_increase": 0.04,
     "min_games": 120
+  },
+  "board": {
+    "large_disagreement_pts": 7.0,
+    "line_move_pts": 2.0,
+    "weather_flag_pts": 1.0,
+    "qb_min_dropbacks": 120,
+    "max_bet_rows": 8,
+    "disagreement_banner_pts": 6.0,
+    "validation_max_age_days": 14,
+    "open_basis_hours": 72,
+    "min_ml_prob_edge": 0.03,
+    "assumed_price": -110
   }
 }

@@ -1,0 +1,16 @@
+game,kickoff_local,tier,market,book,line,price,best_line_across_books,no_vig_prob,model_prob,prob_edge,ev,half_point_value,key_number_note,softness,stake_pct,status,flags,params_version
+Gamma U @ Epsilon A&M,Sat 12:00 PM ET,G5-G5,spread home,"Book One, Book Two",-6.7500,-110.0000,-6.5 (Book One),0.5000,0.7368,0.2368,0.0425,0.0000,,0.8500,0.0117,BET,large disagreement — check ratings; validated w=0.45,v0001
+Beta Tech vs Eta Tech (N),Sat 12:00 PM ET,G5-G5,spread away,"Book One, Book Two",1.2500,-110.0000,+1.5 (Book One),0.5000,0.7448,0.2448,0.0382,0.0000,,0.8500,0.0105,BET,weather adj -6.2; large disagreement — check ratings; validated w=0.45,v0001
+Beta Tech vs Eta Tech (N),Sat 12:00 PM ET,G5-G5,moneyline away,"Book One, Book Two",105.0000,105.0000,+105 (Book One),0.4710,0.7240,0.2530,0.1640,,,0.8500,0.0000,INFO,weather adj -6.2; large disagreement — check ratings,v0001
+Gamma U @ Epsilon A&M,Sat 12:00 PM ET,G5-G5,moneyline home,"Book One, Book Two",-250.0000,-250.0000,-250 (Book One),0.7019,0.8466,0.1447,0.0601,,,0.8500,0.0000,INFO,large disagreement — check ratings,v0001
+Delta College @ Theta State,Thu 7:30 PM ET,G5-G5,spread home,Book One,-10.5000,-110.0000,-10.5 (Book One),0.5000,0.6408,0.1408,0.0573,0.0134,half a point above the 10,0.8500,0.0000,INFO,line moved 3+ since open,v0001
+Gamma U @ Epsilon A&M,Sat 12:00 PM ET,G5-G5,total over,"Book One, Book Two",49.7500,-110.0000,49.5 (Book One),0.5000,0.6090,0.1090,0.0342,0.0000,,0.8500,0.0000,PASS,large disagreement — check ratings,v0001
+Delta College @ Theta State,Thu 7:30 PM ET,G5-G5,total under,Book One,56.0000,-110.0000,56 (Book One),0.5000,0.6087,0.1087,0.0331,0.0118,,0.8500,0.0000,PASS,line moved 3+ since open,v0001
+Beta Tech vs Eta Tech (N),Sat 12:00 PM ET,G5-G5,total under,"Book One, Book Two",46.7500,-110.0000,47 (Book Two),0.5000,0.5226,0.0226,-0.0289,0.0252,,0.8500,0.0000,PASS,weather adj -6.2; large disagreement — check ratings,v0001
+Beta Tech @ Alpha State,Sat 12:00 PM ET,P4-P4,total over,"Book One, Book Two",52.7500,-110.0000,52.5 (Book One),0.5000,0.5583,0.0583,-0.0329,0.0000,,0.2500,0.0000,PASS,,v0001
+Beta Tech @ Alpha State,Sat 12:00 PM ET,P4-P4,spread home,"Book One, Book Two",-7.0000,-110.0000,-7 (Book One),0.5000,0.5361,0.0361,-0.0365,0.0161,sits on the 7,0.2500,0.0000,PASS,,v0001
+Beta Tech @ Alpha State,Sat 12:00 PM ET,P4-P4,moneyline away,"Book One, Book Two",240.0000,240.0000,+240 (Book Two),0.2740,0.2949,0.0210,-0.0605,,,0.2500,0.0000,PASS,,v0001
+Delta College @ Theta State,Thu 7:30 PM ET,G5-G5,moneyline away,Book One,600.0000,600.0000,+600 (Book One),0.1214,0.1519,0.0305,-0.0683,,,0.8500,0.0000,PASS,line moved 3+ since open,v0001
+Tiny FCS @ Zeta Poly,Sat 12:00 PM ET,FBS-FCS,spread away,Book One,31.5000,-110.0000,+31.5 (Book One),0.5000,0.6187,0.1187,0.0055,0.0121,,0.5000,0.0000,FCS,,v0001
+Tiny FCS @ Zeta Poly,Sat 12:00 PM ET,FBS-FCS,total,,58.5000,,,,,,,,,0.5000,0.0000,FCS,no model total for a team,v0001
+Kappa State @ Iota U,Sat 12:00 PM ET,G5-G5,all,,,,,,,,,,,0.8500,0.0000,NO_LINE,,v0001
