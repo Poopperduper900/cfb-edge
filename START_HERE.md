@@ -7,7 +7,15 @@
 3. Copy `.env.example` to `.env` and paste your CFBD key after `CFBD_API_KEY=`.
    Free key: https://collegefootballdata.com/key — if you still have the key you pasted
    into a chat earlier, request a fresh one and use that instead.
-4. Open a terminal in the folder and run `claude`.
+4. One-time install (PowerShell, from inside the folder):
+   ```
+   python -m venv .venv
+   .venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   python -m pytest -q
+   ```
+   The last line should end with `passed`. It needs no API key.
+5. Open a terminal in the folder and run `claude`.
 
 Claude Code reads `CLAUDE.md` automatically every time it starts in this folder, so the
 rules, pitfalls, and domain facts are always loaded. `docs/BUILD_PLAN.md` holds the

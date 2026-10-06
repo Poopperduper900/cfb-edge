@@ -2,8 +2,7 @@
 """
 Week 0 end-to-end, one command.
 
-    export CFBD_API_KEY=...
-    python run_week0.py --season 2026
+    python -m cfbmodel week0 --season 2026
 
 Does the whole chain: pull -> preseason ratings -> project -> compare to market
 -> bet card. Roughly 40 API calls the first time, zero on re-runs.
@@ -24,7 +23,6 @@ wide distribution around it, which is exactly how the pmf prices it.
 """
 from __future__ import annotations
 
-import argparse
 import numpy as np
 import pandas as pd
 
@@ -89,13 +87,8 @@ def build_ratings(season: int, w_model: float):
     return out
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--season", type=int, default=2026)
-    ap.add_argument("--week", type=int, default=0)
-    ap.add_argument("--w-model", type=float, default=0.30)
-    ap.add_argument("--no-weather", action="store_true")
-    args = ap.parse_args()
+def run(args):
+    """Entry point for `python -m cfbmodel week0` (arguments parsed in cli.py)."""
     s, w = args.season, args.week
 
     rt = build_ratings(s, args.w_model)
@@ -181,13 +174,10 @@ def main():
 
     print("""
 BEFORE YOU ACT ON ANY OF THIS
-  Run:  python run_slate.py validate --seasons 2022 2023 2024 2025
+  Run:  python -m cfbmodel validate --seasons 2022 2023 2024 2025
   If the model_margin coefficient is not significant, these disagreements are
   noise with a decimal point. Week 0 is the softest market of the year, but soft
   is not the same as wrong — the market's Week 0 number is also built from
   priors, and it has more of them than you do.
 """)
 
-
-if __name__ == "__main__":
-    main()

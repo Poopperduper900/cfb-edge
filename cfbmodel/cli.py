@@ -1,23 +1,22 @@
-#!/usr/bin/env python3
 """
-Weekly driver.
+Command line for the whole project:  python -m cfbmodel <command>
 
-    export CFBD_API_KEY=...
+    # the key is read from .env (or the CFBD_API_KEY environment variable)
 
     # one-time / weekly data pull (cached; costs ~20 API calls per season)
-    python run_slate.py pull --seasons 2019 2020 2021 2022 2023 2024 2025
+    python -m cfbmodel pull --seasons 2019 2020 2021 2022 2023 2024 2025
 
     # the test you run BEFORE betting anything
-    python run_slate.py validate --seasons 2022 2023 2024 2025
+    python -m cfbmodel validate --seasons 2022 2023 2024 2025
 
     # preseason ratings for weeks 0-2 (no current-season games yet)
-    python run_slate.py preseason --season 2026
+    python -m cfbmodel preseason --season 2026
 
     # in-season slate
-    python run_slate.py slate --season 2026 --week 5
+    python -m cfbmodel slate --season 2026 --week 5
 
     # props for one game
-    python run_slate.py props --season 2026 --week 5 --home Auburn --away Georgia
+    python -m cfbmodel props --season 2026 --week 5 --home Auburn --away Georgia
 """
 from __future__ import annotations
 
@@ -28,9 +27,10 @@ import sys
 import numpy as np
 import pandas as pd
 
-from cfbmodel import (backtest, edge, game_model, ingest, priors, props, qb,
-                      ratings, script, weather)
-from cfbmodel.config import C, OUTPUT
+from . import (backtest, edge, game_model, ingest, priors, props, qb,
+               ratings, script, week0, weather)
+from .config import C, OUTPUT
+from .keys import MissingKeyError
 
 
 # ------------------------------------------------------------------- commands
@@ -358,8 +358,9 @@ def cmd_qb(args):
 # ---------------------------------------------------------------------- main
 
 
-def main():
-    ap = argparse.ArgumentParser(description="CFB game + prop model")
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="python -m cfbmodel",
+                                 description="CFB game + prop model")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     p = sub.add_parser("pull"); p.add_argument("--seasons", type=int, nargs="+", required=True)
@@ -402,9 +403,17 @@ def main():
     p.add_argument("--week", type=int, required=True)
     p.set_defaults(func=cmd_qb)
 
-    args = ap.parse_args()
-    return args.func(args) or 0
+    p = sub.add_parser("week0", help="pull -> preseason ratings -> bet card, one command")
+    p.add_argument("--season", type=int, default=2026)
+    p.add_argument("--week", type=int, default=0)
+    p.add_argument("--w-model", type=float, default=0.30)
+    p.add_argument("--no-weather", action="store_true")
+    p.set_defaults(func=week0.run)
 
-
-if __name__ == "__main__":
-    sys.exit(main())
+    args = ap.parse_args(argv)
+    try:
+        return args.func(args) or 0
+    except MissingKeyError as e:
+        # A missing key is a setup problem, not a bug: say what to do, exit 2.
+        print(f"\n{e}", file=sys.stderr)
+        return 2

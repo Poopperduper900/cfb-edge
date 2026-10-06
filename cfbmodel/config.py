@@ -1,7 +1,7 @@
 """
 Configuration + CFB-specific constants.
 
-Set your CFBD key:  export CFBD_API_KEY="..."      (free tier: 1000 calls/month)
+The CFBD key is read by keys.py (from .env or CFBD_API_KEY); free tier: 1000 calls/month.
 Get one at https://collegefootballdata.com/key
 """
 from __future__ import annotations
@@ -25,7 +25,6 @@ CACHE.mkdir(parents=True, exist_ok=True)
 OUTPUT.mkdir(parents=True, exist_ok=True)
 
 CFBD_BASE = "https://api.collegefootballdata.com"
-CFBD_KEY = os.environ.get("CFBD_API_KEY", "")
 
 # Free tier is 1,000 calls/month. Every ingest call is cached to disk so a
 # backtest re-run costs zero calls. Never loop over games — pull by season/week.

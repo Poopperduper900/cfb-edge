@@ -23,7 +23,8 @@ from typing import Any
 import pandas as pd
 import requests
 
-from .config import CACHE, CFBD_BASE, CFBD_KEY
+from .config import CACHE, CFBD_BASE
+from .keys import get_cfbd_key
 
 _SESSION = requests.Session()
 _CALLS = 0
@@ -45,18 +46,14 @@ def cfbd_get(endpoint: str, refresh: bool = False, **params) -> list[dict]:
     if path.exists() and not refresh:
         return json.loads(path.read_text())
 
-    if not CFBD_KEY:
-        raise RuntimeError(
-            "CFBD_API_KEY not set and no cache for "
-            f"{endpoint} {params}. Get a free key at "
-            "https://collegefootballdata.com/key then `export CFBD_API_KEY=...`"
-        )
+    # Only reached on a cache miss, so cached re-runs and tests need no key.
+    key = get_cfbd_key()
 
     for attempt in range(4):
         r = _SESSION.get(
             f"{CFBD_BASE}{endpoint}",
             params=params,
-            headers={"Authorization": f"Bearer {CFBD_KEY}"},
+            headers={"Authorization": f"Bearer {key}"},
             timeout=60,
         )
         if r.status_code == 429:

@@ -54,6 +54,7 @@ project's own validation harness rejects it.
 
 ```
 python -m pytest -q
+python -m cfbmodel --help                   # lists every command (week0, slate, props, weather, qb ...)
 python -m cfbmodel pull --seasons 2021 2022 2023 2024 2025 2026
 python -m cfbmodel validate --seasons 2022 2023 2024 2025
 python -m cfbmodel update --season 2026 --week N   # weekly team + player ratings
