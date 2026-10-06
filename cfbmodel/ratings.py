@@ -30,6 +30,23 @@ from sklearn.linear_model import Ridge
 from .config import C
 
 
+# ------------------------------------------------------------ as-of filtering
+
+
+def as_of(df: pd.DataFrame, asof_season: int, asof_week: int) -> pd.DataFrame:
+    """Rows strictly before (asof_season, asof_week): earlier seasons, or the same
+    season with an earlier week. Every as-of function must filter through this.
+
+    Why it exists: the filter used to be `(season < S) | (week < W)`, which also
+    admits a LATER season's early weeks (e.g. 2025 week 2 when fitting 2024 week 5).
+    tests/test_no_lookahead.py guards it; docs/AUDIT.md bug A has the history.
+    """
+    before = (df["season"] < asof_season) | (
+        (df["season"] == asof_season) & (df["week"] < asof_week)
+    )
+    return df[before]
+
+
 # ------------------------------------------------------------ play filtering
 
 
@@ -101,7 +118,7 @@ def fit_epa_ratings(
     pass/rush splits if requested.
     """
     df = clean_plays(pbp)
-    df = df[(df["season"] < asof_season) | (df["week"] < asof_week)]
+    df = as_of(df, asof_season, asof_week)
     if df.empty:
         raise ValueError("no plays available before the as-of point")
 
@@ -203,7 +220,7 @@ def fit_market_ratings(
     you are not beating the closer, you are beating the number before it forms.
     """
     df = lines_df.dropna(subset=["spread_close"]).copy()
-    df = df[(df["season"] < asof_season) | (df["week"] < asof_week)]
+    df = as_of(df, asof_season, asof_week)
     df = df.groupby(["gameId", "home", "away", "season", "week"], as_index=False)[
         "spread_close"
     ].median()
@@ -237,7 +254,7 @@ def fit_market_ratings(
 def fit_total_ratings(lines_df: pd.DataFrame, asof_season: int, asof_week: int) -> pd.DataFrame:
     """Same trick for totals: team scoring + team scoring-allowed environment."""
     df = lines_df.dropna(subset=["total_close"]).copy()
-    df = df[(df["season"] < asof_season) | (df["week"] < asof_week)]
+    df = as_of(df, asof_season, asof_week)
     df = df.groupby(["gameId", "home", "away", "season", "week"], as_index=False)[
         "total_close"
     ].median()

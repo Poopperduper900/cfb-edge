@@ -1,12 +1,12 @@
 # Audit of `cfbmodel/` against CLAUDE.md "Known pitfalls"
 
-Phase 0, 2026-10-06. Nothing in `cfbmodel/` was fixed as part of this audit (only moved/wired:
-`run_slate.py` → `cfbmodel/cli.py`, `run_week0.py` → `cfbmodel/week0.py`, key loading → `keys.py`).
+Phase 0, 2026-10-06. The audit itself changed no model code (only moved/wired:
+`run_slate.py` → `cfbmodel/cli.py`, `run_week0.py` → `cfbmodel/week0.py`, key loading → `keys.py`). Bug A was then fixed in a separate commit, test first.
 Every claim marked "measured" comes from `python docs/audit_experiments.py` (synthetic data, no API key).
 
 **Headline: the earlier build has two bugs that would have misled you, neither of which is on the
-12-item list.** (1) A lookahead leak in every rating fit, so any backtest run so far is untrustworthy.
-(2) The CLV sign is backwards. Details under "Other bugs". Nothing below needs your decision yet; the
+12-item list.** (1) A lookahead leak in every rating fit, so any backtest run so far is untrustworthy
+(**fixed 2026-10-06**, see bug A). (2) The CLV sign is backwards. Details under "Other bugs". Nothing below needs your decision yet; the
 fixes are scheduled in the phases named.
 
 Status key: **HANDLED** = correct in code · **PARTIAL** = some of it · **NOT HANDLED** = missing.
@@ -21,7 +21,7 @@ Status key: **HANDLED** = correct in code · **PARTIAL** = some of it · **NOT H
 | 5 | `iterrows()` labels used as positions | **HANDLED** (no violation found) | 9 `iterrows` sites reviewed: `priors.py:51`, `backtest.py:149`, `weather.py:145`, `cli.py` (slate, props, weather), `week0.py`. All read row values with `_` for the label; none index an array by it. | none (Phase 2 `test_no_positional_iterrows`) |
 | 6 | PROE must use time-averaged lead | **PARTIAL** | Handled in `script.simulate_game_script` (`script.py:151`: `0.45 × margin`). **Not** handled in `props.pass_rate_over_expectation` (`props.py:96`), which applies the slope to the full expected margin. It has no callers (dead code), so no output is wrong today, but it is a trap. Fix or delete in Phase 2. | `test_upgrades::test_1` covers the joint path only (Phase 2 `test_proe_time_averaged`) |
 | 7 | Exclude FCS from rating fits | **PARTIAL** | `ratings.clean_plays` drops plays whose offense/defense conference is missing (`ratings.py:69-70`), but only if those columns exist and only in the EPA fit. No API call passes `classification="fbs"` (`ingest.py`), and `fit_market_ratings` / `fit_total_ratings` (`ratings.py:197-260`) use every line row, so FCS opponents enter the market fit if CFBD returns them. | none (Phase 2 `test_fcs_excluded`) |
-| 8 | Garbage-time filter deletes backup-QB plays | **HANDLED** | `qb.build_qb_table` pulls the backup from **unfiltered** plays (`qb.py:153-154`) and subtracts `GARBAGE_TIME_EPA_INFLATION` (`qb.py:122,125`). Caveats: the unfiltered path has no FCS filter; `qb.qb_epa` has the lookahead leak (bug A). | `test_upgrades::test_3` (tier logic only) |
+| 8 | Garbage-time filter deletes backup-QB plays | **HANDLED** | `qb.build_qb_table` pulls the backup from **unfiltered** plays (`qb.py:153-154`) and subtracts `GARBAGE_TIME_EPA_INFLATION` (`qb.py:122,125`). Caveats: the unfiltered path has no FCS filter; `qb.qb_epa` had the lookahead leak (bug A, fixed). | `test_upgrades::test_3` (tier logic only) |
 | 9 | `cfbd` lib v5 auth sends no header | **HANDLED** | `ingest.cfbd_get` uses `requests` with `Authorization: Bearer` (`ingest.py:56`); the `cfbd` library is not used. Gap: a 401 surfaces as a raw `HTTPError` traceback, and `cli.cmd_pull` swallows errors (bug C). | none (Phase 1 401 test) |
 | 10 | Weather: forecasts not reanalysis, shrink, domes = 0 | **PARTIAL** | Handled: dome → 0 in `weather.total_adjustment` (`weather.py:192`) and `attach_weather` (`:147`); horizon shrink in `forecast_confidence` (`:165`); `mode="forecast"` uses the historical-forecast API (`:88`). **Not handled:** coefficients are hand-set, never fitted on historical forecasts (a second, different set lives in `game_model.project_game`); for past games `hours_ahead` is negative so confidence is always 1.0, i.e. backtests ignore the horizon; the dome list is a hand-typed, exact-name match (needs a check against CFBD's venue data, and "Georgia State Stadium" in it is flagged "verify" in the code itself); the weather cache never hits (bug D). | `test_upgrades::test_5` (dome + shrink); Phase 2 `test_dome_zero` |
 | 11 | Cache path configurable | **HANDLED** | `config.py:22` `CFBMODEL_CACHE` (and `CFBMODEL_OUTPUT`, `:23`). Caveat: bug D means the weather cache is not durable even when pointed at Drive. | none |
@@ -31,7 +31,7 @@ Status key: **HANDLED** = correct in code · **PARTIAL** = some of it · **NOT H
 
 Ranked by how much they could hurt you. File and line are where to look.
 
-**A. HIGH: lookahead leak in every "as-of" rating fit.** The filter
+**A. HIGH, FIXED: lookahead leak in every "as-of" rating fit.** The filter
 `(season < asof_season) | (week < asof_week)` (`ratings.py:104,206,240`, `qb.py:48`, `props.py:272`,
 `script.py:89`) lets in any row from a *later* season whose week number is smaller. The correct filter is
 `(season < S) | ((season == S) & (week < W))`. `recency_weights` (`ratings.py`) then gives those future
@@ -39,7 +39,16 @@ rows a weight above 1 (`season_carryover ** negative`, about 1.9×). `backtest.w
 all seasons before fitting, so a 2022 week-5 rating is built partly from 2023-2025 early-season games.
 Measured: ratings change by up to **3.18 points** (market) and 0.146 EPA/play (EPA) when rows that should be
 invisible are removed. **Consequence: any `validate` output from the earlier build must be thrown away.**
-A model that "passed" would be a mirage. Fix in Phase 3 (its acceptance test is exactly this check).
+A model that "passed" would be a mirage.
+
+*Fix:* one shared filter, `ratings.as_of(df, season, week)`, now used at all seven sites (the six above plus
+`props.build_player_priors`, whose docstring claimed "leak-safe by construction" but was not).
+*Proof:* `tests/test_no_lookahead.py` (26 tests) feeds each as-of function everything vs only strictly-earlier
+rows and requires identical output. Written first and run against the old code: 13 failed (every function, at
+the as-of points that have a later season in the data). After the fix: all pass. The evidence script now reports
+a max rating change of 0.0000. One related item is left open: `derive_depth_chart` keeps every prior-season row
+(its 4-week look-back only bites within a season), so early in a season the "depth chart" is last season's.
+That is a modelling choice, not a leak; revisit in Phase 3.
 
 **B. HIGH (once bets are logged): CLV sign is inverted.** `edge.clv` (`edge.py:222`) returns the opposite
 sign for spreads and totals, so "% beating the close" would be backwards. Measured on four cases, all
@@ -75,6 +84,6 @@ at import). Checks [10], [11], [13] only printed (I added minimal assertions, la
 ## Where this leaves the plan
 
 - Phase 1 should also fix **C** and **D**.
-- Phase 2's test list is right; add a leak test early (it is the Phase 3 acceptance test, but **A** is the
-  most dangerous item in this file, so I suggest writing that test first thing in Phase 3, before any rating work).
+- Phase 2's test list stands. The Phase 3 leak test already exists (`tests/test_no_lookahead.py`) because **A** was
+  the most dangerous item here; Phase 3 extends it to the new rating systems and player state as they are added.
 - **B** goes into Phase 8, **E/F/G** into Phase 6/4.

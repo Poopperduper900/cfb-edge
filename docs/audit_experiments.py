@@ -40,8 +40,8 @@ for name, full, fn in (
     diff = (a - b.reindex(a.index)).abs().max()
     print(f"   {name}: max rating change from rows that should be invisible = "
           f"{diff:.4f} -> {'LEAK' if diff > 1e-9 else 'ok'}")
-print(f"   line rows from FUTURE seasons that pass the filter: "
-      f"{int(((ln.season > S) & (ln.week < W)).sum())} of {len(ln)}")
+print(f"   (the OLD filter would have let in {int(((ln.season > S) & (ln.week < W)).sum())} future-season line rows;"
+      f" ratings.as_of lets in 0)")
 
 print("\nB. RIDGE vs HOME FIELD (market fit, all 2024 + 2025 wk 1-13; true HFA 2.4)")
 S2, W2 = 2025, 14

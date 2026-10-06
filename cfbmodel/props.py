@@ -34,6 +34,7 @@ import pandas as pd
 
 from .config import C
 from .game_model import margin_pmf
+from .ratings import as_of
 
 RNG = np.random.default_rng(20260829)
 
@@ -269,7 +270,7 @@ def build_player_priors(box: pd.DataFrame, asof_season: int, asof_week: int) -> 
     Leak-safe by construction: only rows strictly before (season, week) are used.
     """
     df = box.copy()
-    df = df[(df["season"] < asof_season) | (df["week"] < asof_week)]
+    df = as_of(df, asof_season, asof_week)
     df["value"] = pd.to_numeric(df["value"], errors="coerce")
 
     def pick(cat, typ):

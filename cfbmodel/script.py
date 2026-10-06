@@ -30,6 +30,7 @@ import pandas as pd
 
 from .config import C
 from .game_model import margin_pmf
+from .ratings import as_of
 
 RNG = np.random.default_rng(20260829)
 
@@ -86,7 +87,7 @@ def derive_depth_chart(box: pd.DataFrame, team: str, asof_season: int, asof_week
     four games is both more truthful and already in your pipeline.
     """
     d = box[(box["team"] == team)].copy()
-    d = d[(d["season"] < asof_season) | (d["week"] < asof_week)]
+    d = as_of(d, asof_season, asof_week)
     d = d[d["week"] >= asof_week - lookback]
     d["value"] = pd.to_numeric(d["value"], errors="coerce")
 
