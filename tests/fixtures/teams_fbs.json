@@ -1,0 +1,22 @@
+[
+ {
+  "school": "Alpha State",
+  "conference": "Conf A",
+  "classification": "fbs"
+ },
+ {
+  "school": "Beta Tech",
+  "conference": "Conf A",
+  "classification": "fbs"
+ },
+ {
+  "school": "San Jose State",
+  "conference": "Conf B",
+  "classification": "fbs"
+ },
+ {
+  "school": "Gamma University",
+  "conference": "Conf B",
+  "classification": "fbs"
+ }
+]

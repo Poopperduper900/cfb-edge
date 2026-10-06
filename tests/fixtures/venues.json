@@ -1,0 +1,28 @@
+[
+ {
+  "id": 1,
+  "name": "Alpha Field",
+  "city": "Alphaville",
+  "latitude": 33.2,
+  "longitude": -87.5,
+  "dome": false,
+  "timezone": "America/Chicago"
+ },
+ {
+  "id": 2,
+  "name": "Beta Dome",
+  "city": "Betatown",
+  "latitude": 40.0,
+  "longitude": -90.0,
+  "dome": true,
+  "timezone": "America/Chicago"
+ },
+ {
+  "id": 3,
+  "name": "Unknown Park",
+  "city": "Nowhere",
+  "latitude": 35.0,
+  "longitude": -80.0,
+  "timezone": "America/New_York"
+ }
+]

@@ -25,6 +25,7 @@ below does this. ERA5 is kept for descriptive work only.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import timedelta
 
@@ -53,9 +54,15 @@ DOME_VENUES = {
 }
 
 
+def _cache_key(url: str, params: dict) -> str:
+    """Stable file name for a request. hashlib, not hash(): hash() is re-randomised on every
+    run of Python, which made this cache never hit."""
+    digest = hashlib.md5((url + json.dumps(params, sort_keys=True)).encode()).hexdigest()[:16]
+    return f"wx_{digest}.json"
+
+
 def _cache(url: str, params: dict) -> dict:
-    key = f"wx_{abs(hash(url + json.dumps(params, sort_keys=True)))}.json"
-    p = CACHE / key
+    p = CACHE / _cache_key(url, params)
     if p.exists():
         return json.loads(p.read_text())
     r = requests.get(url, params=params, timeout=45)
@@ -146,17 +153,15 @@ def attach_weather(
         venue = g.get("venue")
         if venue in DOME_VENUES:
             rows.append({"gameId": g.get("id"), "dome": True, "wind_mph": 0.0,
-                         "temp_f": 70.0, "precip_in": 0.0, "wx_confidence": 1.0})
+                         "temp_f": 70.0, "precip_in": 0.0, "wx_confidence": 1.0,
+                         "wx_status": "dome"})
             continue
         if venue not in coord.index:
-            rows.append({"gameId": g.get("id"), "dome": False})
+            rows.append({"gameId": g.get("id"), "dome": False, "wx_status": "no_venue_coordinates"})
             continue
         lon, lat = coord.loc[venue, "location.x"], coord.loc[venue, "location.y"]
-        try:
-            wx = game_weather(float(lat), float(lon), g["start_date"], mode=mode)
-        except Exception:
-            wx = {}
-        wx.update(gameId=g.get("id"), dome=False,
+        wx = game_weather(float(lat), float(lon), g["start_date"], mode=mode)
+        wx.update(gameId=g.get("id"), dome=False, wx_status="ok" if wx else "no_hourly_data",
                   wx_confidence=forecast_confidence(wx.get("hours_ahead", 0.0)))
         rows.append(wx)
     return games_df.merge(pd.DataFrame(rows), left_on="id", right_on="gameId", how="left")

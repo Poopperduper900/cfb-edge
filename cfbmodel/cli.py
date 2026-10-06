@@ -23,12 +23,13 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from . import (backtest, edge, game_model, ingest, priors, props, qb,
-               ratings, script, week0, weather)
+from . import (backtest, budget, edge, game_model, ingest, priors, props, qb,
+               ratings, schema, script, teams, week0, weather)
 from .config import C, OUTPUT
 from .keys import MissingKeyError
 
@@ -37,25 +38,64 @@ from .keys import MissingKeyError
 
 
 def cmd_pull(args):
-    total = 0
-    for s in args.seasons:
-        ingest.games(s)
-        ingest.lines(s)
-        ingest.recruiting_teams(s)
+    """Fetch (or reuse from cache) everything the model needs, and say what it cost.
+
+    Any failure stops the run with its reason. The only thing treated as "not there" is
+    an explicit HTTP 404 on a dataset that may not exist for a given year.
+    """
+    ingest.set_current(week=args.week)
+    table = []  # (season, endpoint, rows, calls, note)
+
+    def step(season, label, fn, optional=False):
+        before = ingest.calls_used()
         try:
-            ingest.returning_production(s)
-        except Exception as e:  # endpoint occasionally 404s for old seasons
-            print(f"  returning production {s}: {e}")
-        for w in range(0, 16):
-            try:
-                ingest.plays(s, w)
-                ingest.player_box(s, w)
-            except Exception:
-                pass
-        print(f"pulled {s}  (cumulative API calls this run: {ingest.calls_used()})")
-        total = ingest.calls_used()
-    print(f"\ndone. {total} calls used. Free tier is 1,000/month; everything is "
-          f"cached, so re-runs cost zero.")
+            n, note = len(fn()), ""
+        except ingest.CfbdNotFound:
+            if not optional:
+                raise
+            n, note = 0, "not available (HTTP 404)"
+        table.append((season, label, n, ingest.calls_used() - before, note))
+
+    def weekly(season, label, fn):
+        before, rows, weeks = ingest.calls_used(), 0, ingest.regular_weeks(season)
+        for w in weeks:
+            rows += len(fn(season, w))
+        table.append((season, f"{label} ({len(weeks)} weeks)", rows, ingest.calls_used() - before, ""))
+
+    for s in args.seasons:
+        step(s, "teams/fbs", lambda s=s: ingest.teams_fbs(s))
+        step(s, "games", lambda s=s: ingest.games(s))
+        step(s, "lines", lambda s=s: ingest.lines(s))
+        step(s, "recruiting/teams", lambda s=s: ingest.recruiting_teams(s), optional=True)
+        step(s, "player/returning", lambda s=s: ingest.returning_production(s), optional=True)
+        step(s, "player/portal", lambda s=s: ingest.portal(s), optional=True)
+        step(s, "player/usage", lambda s=s: ingest.usage(s), optional=True)
+        weekly(s, "plays", ingest.plays)
+        weekly(s, "games/players", ingest.player_box)
+    step("-", "venues", ingest.venues)
+
+    print(f"\n{'season':<7}{'endpoint':<26}{'rows':>10}{'calls':>7}  note")
+    for season, label, n, calls, note in table:
+        print(f"{season!s:<7}{label:<26}{n:>10,}{calls:>7}  {note}")
+        if n == 0 and not note:
+            print(f"{'':<7}  ^ zero rows: expected for a season that has not started, otherwise check")
+    bud = ingest.budget()
+    print(f"\ncalls this run: {ingest.calls_used()}   "
+          f"used this month: {bud.used()} of {budget.MONTHLY_LIMIT}   remaining: {bud.remaining()}")
+    unmatched = teams.seen_unmatched()
+    if unmatched:
+        path = teams.write_unmatched_log()
+        top = ", ".join(f"{n} ({r})" for n, r in sorted(unmatched.items(), key=lambda kv: -kv[1])[:8])
+        print(f"\nnames that are not FBS teams: {len(unmatched)} (mostly FCS opponents). "
+              f"Biggest: {top}\nfull list: {path}\n"
+              "If an FBS team is on that list under another spelling, add it to data/team_aliases.csv.")
+
+
+def cmd_docs_data(args):
+    """Rewrite docs/DATA.md from schema.py (a test fails if the two drift apart)."""
+    path = Path(__file__).resolve().parent.parent / "docs" / "DATA.md"
+    path.write_text(schema.render_markdown())
+    print(f"wrote {path}")
 
 
 def _load(seasons):
@@ -63,16 +103,9 @@ def _load(seasons):
     ln = pd.concat([ingest.lines(s) for s in seasons], ignore_index=True)
     pbp = {}
     for s in seasons:
-        frames = []
-        for w in range(0, 16):
-            try:
-                d = ingest.plays(s, w)
-            except Exception:
-                continue
-            if not d.empty:
-                frames.append(d)
-        if frames:
-            pbp[s] = pd.concat(frames, ignore_index=True)
+        d = ingest.season_plays(s)
+        if not d.empty:
+            pbp[s] = d
     return g, ln, pbp
 
 
@@ -124,8 +157,9 @@ def cmd_preseason(args):
     rp = ingest.returning_production(s)
     try:
         pt = ingest.portal(s)
-    except Exception:
+    except ingest.CfbdNotFound:
         pt = pd.DataFrame()
+        print(f"note: CFBD has no transfer-portal data for {s}; portal term is zero.")
 
     prev_pbp = pd.concat(
         [d for y in (s - 1, s - 2) for d in [_season_pbp(y)] if d is not None and not d.empty],
@@ -150,15 +184,7 @@ If a team you know is bad shows up top-15, the input is wrong, not the sport.
 
 
 def _season_pbp(year):
-    frames = []
-    for w in range(0, 16):
-        try:
-            d = ingest.plays(year, w)
-        except Exception:
-            continue
-        if not d.empty:
-            frames.append(d)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return ingest.season_plays(year)
 
 
 def cmd_slate(args):
@@ -177,10 +203,7 @@ def cmd_slate(args):
 
     # weather: forecast-based, horizon-shrunk, domes zeroed
     if not args.no_weather:
-        try:
-            slate = weather.attach_weather(slate, ingest.venues(), mode="forecast")
-        except Exception as e:
-            print(f"weather unavailable ({e}); continuing without it")
+        slate = weather.attach_weather(slate, ingest.venues(), mode="forecast")
 
     cards = []
     for _, row in slate.iterrows():
@@ -361,27 +384,34 @@ def cmd_qb(args):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="python -m cfbmodel",
                                  description="CFB game + prop model")
+    net = argparse.ArgumentParser(add_help=False)
+    net.add_argument("--force", action="store_true",
+                     help="allow CFBD calls past the 950-per-month safety stop")
+    net.add_argument("--refresh", action="store_true",
+                     help="ignore the cache and re-fetch everything this run touches")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
-    p = sub.add_parser("pull"); p.add_argument("--seasons", type=int, nargs="+", required=True)
+    p = sub.add_parser("pull", parents=[net]); p.add_argument("--seasons", type=int, nargs="+", required=True)
+    p.add_argument("--week", type=int, default=None,
+                   help="current week of the season in progress (weeks before it are never re-pulled)")
     p.set_defaults(func=cmd_pull)
 
-    p = sub.add_parser("validate")
+    p = sub.add_parser("validate", parents=[net])
     p.add_argument("--seasons", type=int, nargs="+", required=True)
     p.add_argument("--start-week", type=int, default=4)
     p.set_defaults(func=cmd_validate)
 
-    p = sub.add_parser("preseason"); p.add_argument("--season", type=int, required=True)
+    p = sub.add_parser("preseason", parents=[net]); p.add_argument("--season", type=int, required=True)
     p.set_defaults(func=cmd_preseason)
 
-    p = sub.add_parser("slate")
+    p = sub.add_parser("slate", parents=[net])
     p.add_argument("--season", type=int, required=True)
     p.add_argument("--week", type=int, required=True)
     p.add_argument("--w-model", type=float, default=0.35)
     p.add_argument("--no-weather", action="store_true")
     p.set_defaults(func=cmd_slate)
 
-    p = sub.add_parser("props")
+    p = sub.add_parser("props", parents=[net])
     p.add_argument("--season", type=int, required=True)
     p.add_argument("--week", type=int, required=True)
     p.add_argument("--home", required=True)
@@ -393,17 +423,20 @@ def main(argv=None):
     p.add_argument("--away-qb-out", action="store_true")
     p.set_defaults(func=cmd_props)
 
-    p = sub.add_parser("weather")
+    p = sub.add_parser("weather", parents=[net])
     p.add_argument("--season", type=int, required=True)
     p.add_argument("--week", type=int, required=True)
     p.set_defaults(func=cmd_weather)
 
-    p = sub.add_parser("qb")
+    p = sub.add_parser("qb", parents=[net])
     p.add_argument("--season", type=int, required=True)
     p.add_argument("--week", type=int, required=True)
     p.set_defaults(func=cmd_qb)
 
-    p = sub.add_parser("week0", help="pull -> preseason ratings -> bet card, one command")
+    p = sub.add_parser("docs-data", parents=[net], help="regenerate docs/DATA.md from the schema")
+    p.set_defaults(func=cmd_docs_data)
+
+    p = sub.add_parser("week0", parents=[net], help="pull -> preseason ratings -> bet card, one command")
     p.add_argument("--season", type=int, default=2026)
     p.add_argument("--week", type=int, default=0)
     p.add_argument("--w-model", type=float, default=0.30)
@@ -411,8 +444,12 @@ def main(argv=None):
     p.set_defaults(func=week0.run)
 
     args = ap.parse_args(argv)
+    ingest.configure(force=args.force, refresh=args.refresh)
     try:
         return args.func(args) or 0
+    except (ingest.CfbdError, budget.BudgetExceeded, schema.SchemaError) as e:
+        print(f"\n{type(e).__name__}: {e}", file=sys.stderr)
+        return 2
     except MissingKeyError as e:
         # A missing key is a setup problem, not a bug: say what to do, exit 2.
         print(f"\n{e}", file=sys.stderr)

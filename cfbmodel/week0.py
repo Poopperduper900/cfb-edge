@@ -37,16 +37,7 @@ def build_ratings(season: int, w_model: float):
     print(f"pulling {prev-1}-{prev} lines and plays...")
     lines = pd.concat([ingest.lines(y) for y in (prev - 1, prev)], ignore_index=True)
 
-    frames = []
-    for y in (prev - 1, prev):
-        for wk in range(0, 16):
-            try:
-                d = ingest.plays(y, wk)
-            except Exception:
-                continue
-            if not d.empty:
-                frames.append(d)
-    pbp = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    pbp = pd.concat([ingest.season_plays(y) for y in (prev - 1, prev)], ignore_index=True)
 
     # as-of week 99 of the previous season = "everything that ever happened"
     mkt = ratings.fit_market_ratings(lines, prev, 99)
@@ -61,16 +52,18 @@ def build_ratings(season: int, w_model: float):
     for y in range(season - 4, season + 1):
         try:
             rec[y] = ingest.recruiting_teams(y)
-        except Exception:
-            pass
+        except ingest.CfbdNotFound:
+            print(f"  note: CFBD has no recruiting data for {y}; that class counts as zero.")
     try:
         rp = ingest.returning_production(season)
-    except Exception:
+    except ingest.CfbdNotFound:
         rp = pd.DataFrame()
+        print(f"  note: CFBD has no returning-production data for {season}.")
     try:
         pt = ingest.portal(season)
-    except Exception:
+    except ingest.CfbdNotFound:
         pt = pd.DataFrame()
+        print(f"  note: CFBD has no transfer-portal data for {season}.")
 
     pre = priors.build_preseason_ratings(
         prior_season_ratings=rt["rating"],
@@ -104,10 +97,7 @@ def run(args):
     cur = cur[cur["week"] == w]
 
     if not args.no_weather:
-        try:
-            slate = weather.attach_weather(slate, ingest.venues(), mode="forecast")
-        except Exception as e:
-            print(f"weather unavailable ({e})")
+        slate = weather.attach_weather(slate, ingest.venues(), mode="forecast")
 
     rows = []
     for _, g in slate.iterrows():

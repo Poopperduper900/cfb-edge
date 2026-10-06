@@ -1,0 +1,58 @@
+[
+ {
+  "gameId": 101,
+  "offense": "Alpha State",
+  "defense": "Beta Tech",
+  "playType": "Rush",
+  "ppa": 0.12,
+  "period": 1,
+  "offenseScore": 0,
+  "defenseScore": 0,
+  "home": "Alpha State",
+  "away": "Beta Tech",
+  "offenseConference": "Conf A",
+  "defenseConference": "Conf A"
+ },
+ {
+  "gameId": 101,
+  "offense": "Alpha State",
+  "defense": "Beta Tech",
+  "playType": "Pass Reception",
+  "ppa": 0.4,
+  "period": 1,
+  "offenseScore": 0,
+  "defenseScore": 0,
+  "home": "Alpha State",
+  "away": "Beta Tech",
+  "offenseConference": "Conf A",
+  "defenseConference": "Conf A"
+ },
+ {
+  "gameId": 101,
+  "offense": "Beta Tech",
+  "defense": "Alpha State",
+  "playType": "Pass Incompletion",
+  "ppa": -0.31,
+  "period": 1,
+  "offenseScore": 0,
+  "defenseScore": 0,
+  "home": "Alpha State",
+  "away": "Beta Tech",
+  "offenseConference": "Conf A",
+  "defenseConference": "Conf A"
+ },
+ {
+  "gameId": 101,
+  "offense": "Beta Tech",
+  "defense": "Alpha State",
+  "playType": "Sack",
+  "ppa": null,
+  "period": 1,
+  "offenseScore": 0,
+  "defenseScore": 0,
+  "home": "Alpha State",
+  "away": "Beta Tech",
+  "offenseConference": "Conf A",
+  "defenseConference": "Conf A"
+ }
+]

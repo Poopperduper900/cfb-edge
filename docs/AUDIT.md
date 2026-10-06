@@ -54,14 +54,14 @@ That is a modelling choice, not a leak; revisit in Phase 3.
 sign for spreads and totals, so "% beating the close" would be backwards. Measured on four cases, all
 wrong. Fix with the sign-convention tests in Phase 8.
 
-**C. MEDIUM: errors are swallowed, which breaks rule 1 ("if an API call fails, stop and report").**
+**C. MEDIUM, FIXED in Phase 1 (one item left for Phase 4): errors are swallowed, which breaks rule 1 ("if an API call fails, stop and report").**
 `cli.cmd_pull` (`except Exception: pass` around plays/box scores), `cli._load`, five `try/except` blocks in
 `week0.build_ratings`, `weather.attach_weather` (`except Exception: wx = {}`), `ingest.season_plays`. A bad key,
-a rate limit or a typo in the season looks like "no data" instead of an error. Phase 1.
+a rate limit or a typo in the season looks like "no data" instead of an error. *Fix:* those sites now let errors through; only an explicit HTTP 404 on an optional dataset is reported (visibly) as "not available". The CLI turns CFBD/budget/schema errors into a plain message and exit code 2. *Left:* `backtest.walk_forward` still has `except (ValueError, KeyError): continue`, replaced when the validation harness is rebuilt (Phase 4).
 
-**D. MEDIUM: weather cache never hits.** `weather._cache` (`weather.py:57`) names files with Python's `hash()`,
+**D. MEDIUM, FIXED in Phase 1: weather cache never hits.** `weather._cache` (`weather.py:57`) names files with Python's `hash()`,
 which is randomised per process (measured: two runs, two different values). Every run re-calls Open-Meteo.
-Use `hashlib` as `ingest._cache_path` does. Phase 1.
+*Fix:* `weather._cache_key` uses `hashlib`; a test pins the exact file name.
 
 **E. LOW: duplicated, hard-coded adjustments.** `game_model.project_game` carries its own wind/precip/cold/
 altitude/rest/travel numbers (e.g. wind −0.42/mph over 12) that disagree with `weather.total_adjustment`

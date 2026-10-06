@@ -1,0 +1,59 @@
+[
+ {
+  "id": 101,
+  "teams": [
+   {
+    "team": "Alpha State",
+    "conference": "Conf A",
+    "categories": [
+     {
+      "name": "rushing",
+      "types": [
+       {
+        "name": "CAR",
+        "athletes": [
+         {
+          "id": "9001",
+          "name": "A. Runner",
+          "stat": "18"
+         }
+        ]
+       },
+       {
+        "name": "YDS",
+        "athletes": [
+         {
+          "id": "9001",
+          "name": "A. Runner",
+          "stat": "96"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   },
+   {
+    "team": "Beta Tech",
+    "conference": "Conf A",
+    "categories": [
+     {
+      "name": "receiving",
+      "types": [
+       {
+        "name": "REC",
+        "athletes": [
+         {
+          "id": "9100",
+          "name": "B. Catcher",
+          "stat": "6"
+         }
+        ]
+       }
+      ]
+     }
+    ]
+   }
+  ]
+ }
+]
