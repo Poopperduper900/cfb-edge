@@ -70,3 +70,19 @@ def make_league(seed: int = 7, n_teams: int = 40, seasons=(2024, 2025), weeks=ra
                lines=pd.DataFrame(lines))
     out["plays"] = pd.concat(plays, ignore_index=True) if plays else pd.DataFrame()
     return out
+
+
+def box_week(season: int, week: int, team: str, rush: dict | None = None, rec: dict | None = None,
+             game_id: int = 1) -> pd.DataFrame:
+    """Box-score rows (the shape ingest.player_box returns) for one team-game.
+    rush: {player: (carries, yards)}   rec: {player: (receptions, yards)}.
+    The athlete id is the player's name, so the same name means the same person."""
+    rows = []
+    for cat, spec, (touch, yds) in (("rushing", rush or {}, ("CAR", "YDS")),
+                                    ("receiving", rec or {}, ("REC", "YDS"))):
+        for player, (n, y) in spec.items():
+            for stat, v in ((touch, n), (yds, y)):
+                rows.append(dict(gameId=game_id, season=season, week=week, team=team, conference="X",
+                                 category=cat, stat_type=stat, athlete_id=player, player=player,
+                                 value=str(v), team_is_fbs=True))
+    return pd.DataFrame(rows)

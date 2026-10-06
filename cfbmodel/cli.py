@@ -29,7 +29,7 @@ import numpy as np
 import pandas as pd
 
 from . import (backtest, budget, edge, game_model, ingest, priors, props, qb,
-               ratings, schema, script, teams, week0, weather)
+               playerstate, ratings, schema, script, state, teams, week0, weather)
 from .config import C, OUTPUT
 from .keys import MissingKeyError
 
@@ -151,36 +151,63 @@ Read it like this:
     print("\nwrote output/walkforward.csv")
 
 
+def _portal_or_empty(season):
+    try:
+        return ingest.portal(season)
+    except ingest.CfbdNotFound:
+        print(f"note: CFBD has no transfer-portal data for {season}; portal term is zero.")
+        return pd.DataFrame()
+
+
 def cmd_preseason(args):
     s = args.season
-    rec = {y: ingest.recruiting_teams(y) for y in range(s - 4, s + 1)}
-    rp = ingest.returning_production(s)
-    try:
-        pt = ingest.portal(s)
-    except ingest.CfbdNotFound:
-        pt = pd.DataFrame()
-        print(f"note: CFBD has no transfer-portal data for {s}; portal term is zero.")
-
-    prev_pbp = pd.concat(
-        [d for y in (s - 1, s - 2) for d in [_season_pbp(y)] if d is not None and not d.empty],
-        ignore_index=True,
-    )
-    prior = ratings.fit_epa_ratings(prev_pbp, s, 0, split_pass_rush=False)["net_epa"]
-
-    out = priors.build_preseason_ratings(
-        prior_season_ratings=prior,
-        recruiting=priors.rolling_recruiting(rec, s),
-        returning=priors.returning_production_score(rp),
-        portal=priors.portal_score(pt, s),
-    )
-    out = out[["rating"]].sort_values("rating", ascending=False)
+    ln = pd.concat([ingest.lines(y) for y in (s - 2, s - 1)], ignore_index=True)
+    rec = {y: ingest.recruiting_teams(y) for y in range(s - 3, s + 1)}
+    prior = state.preseason_prior_points(s, ln, rec, ingest.returning_production(s), _portal_or_empty(s))
+    out = prior.to_frame("rating").sort_values("rating", ascending=False)
     out.to_csv(OUTPUT / f"preseason_{s}.csv")
     print(out.head(30).round(2).to_string())
-    print(f"\nwrote output/preseason_{s}.csv")
+    print(f"\nwrote output/preseason_{s}.csv   (blend weights: {prior.attrs.get('weights_source')})")
+    if prior.attrs.get("weights_source") == "default_unfitted":
+        print("NOTE: using unfitted default weights. Run `python -m cfbmodel fit-priors` once "
+              "several seasons are pulled.")
     print("""
 Sanity check this list against your own eyes before it prices a single game.
 If a team you know is bad shows up top-15, the input is wrong, not the sport.
 """)
+
+
+def cmd_fit_priors(args):
+    """Fit the preseason blend weights on past seasons and save them with their CV score."""
+    seasons = sorted(args.seasons)
+    ln = pd.concat([ingest.lines(y) for y in range(min(seasons) - 1, max(seasons) + 1)], ignore_index=True)
+    rec = {y: ingest.recruiting_teams(y) for y in range(min(seasons) - 3, max(seasons) + 1)}
+    rp = {y: ingest.returning_production(y) for y in seasons}
+    pt = {y: _portal_or_empty(y) for y in seasons}
+    hist = priors.build_prior_history(ln, rec, rp, pt, seasons)
+    weights, cv = priors.fit_prior_weights_cv(hist)
+    path = priors.save_prior_weights(weights, cv, cv["seasons"])
+    print("fitted preseason weights:", json.dumps(weights))
+    print(f"out-of-sample (leave-one-season-out, n={cv['n']}):  r={cv['r_weighted_composite']:.3f}  "
+          f"vs last-season-rating-only r={cv['r_prior_rating_only']:.3f}   rmse={cv['rmse']:.2f}  r2={cv['r2']:.3f}")
+    print(f"wrote {path}")
+
+
+def cmd_update(args):
+    """After week W has finished: refit team ratings and update player posteriors."""
+    s, w = args.season, args.week
+    ingest.set_current(week=w + 1)
+    g, ln, pbp = _load([x for x in (s - 2, s - 1, s) if x >= 2015])
+    allp = pd.concat(pbp.values(), ignore_index=True)
+    box = pd.concat([ingest.player_box(s, x) for x in range(0, w + 1)], ignore_index=True)
+    rec = {y: ingest.recruiting_teams(y) for y in range(s - 3, s + 1)}
+    prior = state.preseason_prior_points(s, ln, rec, ingest.returning_production(s), _portal_or_empty(s))
+    res = state.run_update(s, w, ln, allp, box, prior_pts=prior)
+    t = res["teams"].sort_values("rating", ascending=False)
+    print(t[["rating", "market_rating", "model_rating_shrunk", "prior_weight"]].head(15).round(2).to_string())
+    print(f"\nw_model = {t['w_model'].iloc[0]:.2f}  (0 means: market only, nothing proven yet)")
+    print(f"teams:   {res['teams_path']}  ({len(res['teams'])} teams)")
+    print(f"players: {res['players_path']}  ({len(res['players'])} player-groups)")
 
 
 def _season_pbp(year):
@@ -404,10 +431,20 @@ def main(argv=None):
     p = sub.add_parser("preseason", parents=[net]); p.add_argument("--season", type=int, required=True)
     p.set_defaults(func=cmd_preseason)
 
+    p = sub.add_parser("fit-priors", parents=[net], help="fit and save the preseason blend weights")
+    p.add_argument("--seasons", type=int, nargs="+", required=True)
+    p.set_defaults(func=cmd_fit_priors)
+
+    p = sub.add_parser("update", parents=[net], help="after week W: refit team ratings, update players")
+    p.add_argument("--season", type=int, required=True)
+    p.add_argument("--week", type=int, required=True, help="the week that just finished")
+    p.set_defaults(func=cmd_update)
+
     p = sub.add_parser("slate", parents=[net])
     p.add_argument("--season", type=int, required=True)
     p.add_argument("--week", type=int, required=True)
-    p.add_argument("--w-model", type=float, default=0.35)
+    p.add_argument("--w-model", type=float, default=None,
+                   help="experiments only; default reads output/validation_status.json (0 if absent)")
     p.add_argument("--no-weather", action="store_true")
     p.set_defaults(func=cmd_slate)
 
@@ -416,7 +453,8 @@ def main(argv=None):
     p.add_argument("--week", type=int, required=True)
     p.add_argument("--home", required=True)
     p.add_argument("--away", required=True)
-    p.add_argument("--w-model", type=float, default=0.35)
+    p.add_argument("--w-model", type=float, default=None,
+                   help="experiments only; default reads output/validation_status.json (0 if absent)")
     p.add_argument("--p-play", type=float, default=1.0,
                    help="probability the player suits up (CFB has no injury report)")
     p.add_argument("--home-qb-out", action="store_true")
@@ -439,7 +477,8 @@ def main(argv=None):
     p = sub.add_parser("week0", parents=[net], help="pull -> preseason ratings -> bet card, one command")
     p.add_argument("--season", type=int, default=2026)
     p.add_argument("--week", type=int, default=0)
-    p.add_argument("--w-model", type=float, default=0.30)
+    p.add_argument("--w-model", type=float, default=None,
+                   help="experiments only; default reads output/validation_status.json (0 if absent)")
     p.add_argument("--no-weather", action="store_true")
     p.set_defaults(func=week0.run)
 

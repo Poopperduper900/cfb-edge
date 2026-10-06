@@ -21,11 +21,22 @@ them from your own data.
 """
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 from sklearn.linear_model import RidgeCV
 
+from . import config, ratings as _ratings
 
+
+PRIOR_FEATURES = ["prior_rating", "recruiting", "returning", "portal"]
+
+# Starting guess ONLY. Real weights come from `python -m cfbmodel fit-priors`, which writes
+# output/prior_weights.json; build_preseason_ratings uses that file when it exists and records
+# in `out.attrs["weights_source"]` which of the two it used.
 DEFAULT_WEIGHTS = {
     "prior_rating": 0.45,
     "returning": 0.25,
@@ -161,7 +172,11 @@ def build_preseason_ratings(
     resulting distribution in points; ~11 matches the observed spread of FBS
     team strength (best team ~ +30, worst ~ -30 against average).
     """
-    w = weights or DEFAULT_WEIGHTS
+    if weights is None:
+        weights, weights_source = load_prior_weights()
+    else:
+        weights_source = "explicit"
+    w = weights
     parts = {
         "prior_rating": _z(prior_season_ratings),
         "recruiting": recruiting,
@@ -174,6 +189,7 @@ def build_preseason_ratings(
     combined = sum(w[k] * z[k] for k in w)
     out = pd.DataFrame({"rating": _z(combined) * scale_points}, index=idx)
     out["components"] = list(z.round(3).to_dict("records"))
+    out.attrs["weights_source"] = weights_source
     return out
 
 
@@ -192,6 +208,105 @@ def fit_prior_weights(history: pd.DataFrame) -> dict:
     if raw.sum() == 0:
         return DEFAULT_WEIGHTS
     return dict(zip(feats, (raw / raw.sum()).round(3)))
+
+
+def prior_weights_path() -> Path:
+    return config.OUTPUT / "prior_weights.json"
+
+
+def load_prior_weights(path: Path | None = None) -> tuple[dict, str]:
+    """(weights, source): the fitted weights if output/prior_weights.json exists, else the
+    unfitted defaults with source "default_unfitted"."""
+    p = Path(path) if path else prior_weights_path()
+    if p.exists():
+        return json.loads(p.read_text())["weights"], "fitted"
+    return dict(DEFAULT_WEIGHTS), "default_unfitted"
+
+
+def save_prior_weights(weights: dict, cv: dict, seasons: list[int], path: Path | None = None,
+                       generated: str | None = None) -> Path:
+    p = Path(path) if path else prior_weights_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({
+        "generated": generated or datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "features": PRIOR_FEATURES, "weights": weights, "cv": cv, "seasons": seasons,
+    }, indent=2, sort_keys=True))
+    return p
+
+
+def build_prior_history(
+    lines: pd.DataFrame,
+    recruiting_by_year: dict[int, pd.DataFrame],
+    returning_by_year: dict[int, pd.DataFrame],
+    portal_by_year: dict[int, pd.DataFrame],
+    seasons: list[int],
+) -> pd.DataFrame:
+    """
+    One row per (team, season) for fitting the preseason weights: the four z-scored inputs as
+    they stood BEFORE that season, and `target` = the team's market-implied rating from that
+    season's own games.
+
+    Leak safety: inputs use only data from earlier seasons (the prior rating is fit as of
+    (season, week 0)); only `target` looks at the season itself, which is the point of a target.
+    A season with no earlier lines has no prior rating and is skipped. A component that is not
+    available for a season (e.g. no portal data) is neutral (0), as in build_preseason_ratings.
+    """
+    frames = []
+    for s in seasons:
+        if not (lines["season"] < s).any() or not (lines["season"] == s).any():
+            continue
+        prior = _ratings.fit_market_ratings(lines, s, 0)["market_rating"]
+        target = _ratings.fit_market_ratings(
+            lines[lines["season"] == s], s + 1, 0, half_life_weeks=1e9)["market_rating"]
+        rp = returning_by_year.get(s)
+        pt = portal_by_year.get(s)
+        feats = pd.DataFrame({
+            "prior_rating": _z(prior),
+            "recruiting": rolling_recruiting(recruiting_by_year, s),
+            "returning": returning_production_score(rp) if rp is not None and len(rp) else np.nan,
+            "portal": portal_score(pt, s) if pt is not None and len(pt) else np.nan,
+        }).reindex(target.index)
+        feats[["recruiting", "returning", "portal"]] = feats[["recruiting", "returning", "portal"]].fillna(0.0)
+        feats["target"] = target
+        feats["season"] = s
+        frames.append(feats.dropna(subset=["prior_rating", "target"]).rename_axis("team").reset_index())
+    if not frames:
+        raise ValueError("need at least two seasons of lines to build a prior history")
+    return pd.concat(frames, ignore_index=True)
+
+
+def fit_prior_weights_cv(history: pd.DataFrame) -> tuple[dict, dict]:
+    """
+    Fit the blend weights on all seasons, and score them by leave-one-season-out: for each
+    season, weights are fit on the others and judged on the one left out (never on data they
+    saw). Returns (weights, cv) where cv reports pooled out-of-sample numbers next to the
+    "last season's rating only" baseline, so you can see whether recruiting/returning/portal
+    earn their place.
+    """
+    d = history.dropna(subset=PRIOR_FEATURES + ["target"]).reset_index(drop=True)
+    seasons = sorted(d["season"].unique())
+    if len(seasons) < 2:
+        raise ValueError("need at least two seasons to cross-validate the prior weights")
+    weights = fit_prior_weights(d)
+    ys, ridge_pred, comp_pred, base_pred = [], [], [], []
+    for s in seasons:
+        tr, te = d[d["season"] != s], d[d["season"] == s]
+        m = RidgeCV(alphas=np.logspace(-2, 3, 30)).fit(tr[PRIOR_FEATURES], tr["target"])
+        w = fit_prior_weights(tr)
+        ys.append(te["target"].to_numpy())
+        ridge_pred.append(m.predict(te[PRIOR_FEATURES]))
+        comp_pred.append(sum(w[k] * te[k].to_numpy() for k in PRIOR_FEATURES))
+        base_pred.append(te["prior_rating"].to_numpy())
+    y, rp, cp, bp = map(np.concatenate, (ys, ridge_pred, comp_pred, base_pred))
+    sst = float(((y - y.mean()) ** 2).sum())
+    cv = {
+        "scheme": "leave-one-season-out", "n": int(len(y)), "seasons": [int(x) for x in seasons],
+        "rmse": float(np.sqrt(((y - rp) ** 2).mean())),
+        "r2": float(1 - ((y - rp) ** 2).sum() / sst),
+        "r_weighted_composite": float(np.corrcoef(y, cp)[0, 1]),
+        "r_prior_rating_only": float(np.corrcoef(y, bp)[0, 1]),
+    }
+    return weights, cv
 
 
 def _z(s: pd.Series) -> pd.Series:

@@ -27,6 +27,7 @@ import pandas as pd
 from scipy import sparse
 from sklearn.linear_model import Ridge
 
+from . import status
 from .config import C
 
 
@@ -293,19 +294,25 @@ def fit_total_ratings(lines_df: pd.DataFrame, asof_season: int, asof_week: int) 
 
 
 def blend(
-    epa_ratings: pd.DataFrame, market_ratings: pd.DataFrame, w_model: float = 0.35
+    epa_ratings: pd.DataFrame, market_ratings: pd.DataFrame, w_model: float | None = None
 ) -> pd.DataFrame:
     """
-    Convert EPA ratings to points and blend with market ratings.
+    Convert EPA ratings to points and blend with market ratings:
+        rating = w_model * model + (1 - w_model) * market
 
-    w_model is the only genuinely dangerous knob in this repo. High w_model =
-    you are claiming to know more than the market. Set it from the backtest's
-    fitted regression coefficient, not from how confident you feel.
+    w_model is the only genuinely dangerous knob in this repo. High w_model = you are claiming
+    to know more than the market. It is NOT a number to type in: when left as None it is read
+    from output/validation_status.json (what the validation gate proved), and it is 0 when that
+    file is missing or a drift alarm is active ("the market until proven otherwise").
+    Pass an explicit number only for experiments such as the walk-forward backtest itself.
     """
+    if w_model is None:
+        w_model = status.w_model_for("spread_vs_close")
     j = epa_ratings.join(market_ratings, how="inner")
     pts = j["net_epa"] * C.pace_mean * 2.0  # EPA/play -> points/game, both sides
     pts = pts - pts.mean()
     j["model_rating_pts"] = pts
     j["rating"] = w_model * j["model_rating_pts"] + (1 - w_model) * j["market_rating"]
     j["disagreement"] = j["model_rating_pts"] - j["market_rating"]
+    j["w_model"] = float(w_model)
     return j
